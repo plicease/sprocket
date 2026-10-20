@@ -65,3 +65,9 @@ The host's serial I/O should be separated from packet processing so protocol tes
 - Whether the host CLI should use `sprocket send`, `sprocket image`, and `sprocket install` exactly as sketched.
 - DOS minimum version (3.3 is a provisional target).
 - Whether future hosts on macOS/Windows are supported immediately or after Linux stabilization.
+
+## Emulator-backed development
+
+DOSBox-X is the primary rapid-iteration environment for DOS executable, protocol, and image-transfer testing. 86Box provides a second tier with configurable period PC hardware, including 8088-class CPU and UART configurations. Both run on the Linux development machine `athena`; neither replaces final tests on `smokey`, the NuXT, or other real hardware. See [testing](testing.md).
+
+The Rust host's byte-stream transport abstraction should support physical serial ports and a TCP-backed test transport. TCP is a **host-side development adapter**, not a requirement of vintage clients or a change to the native wire protocol.

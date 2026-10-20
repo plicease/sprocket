@@ -12,6 +12,7 @@ SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging 
 - [Disk imaging](docs/imaging.md): addressing, integrity, error reporting, safety.
 - [Licensing](docs/licensing.md): MIT project policy and third-party obligations.
 - [Roadmap](docs/roadmap.md): staged implementation and acceptance criteria.
+- [Testing and emulation](docs/testing.md): DOSBox-X, 86Box, CI, and real-hardware validation.
 
 ## Intended repository layout
 

@@ -54,3 +54,13 @@
 - MIT license and third-party notice compliance, including Open Watcom runtime.
 - Reproducible builds, tests against synthetic serial failures, and clear error messages.
 - Explicit safety barriers against accidental disk writes.
+
+## Emulator and CI acceptance gates
+
+- **Milestone 1:** host XMODEM packet tests with synthetic receiver, then HyperTerminal on `smokey`; emulation of the DOS client is not required yet.
+- **Milestone 2:** run DOS client under DOSBox-X with a virtual null-modem/TCP link to the Rust host; test protocol handshake, timeout, corruption and retry. Repeat critical paths under 86Box with an 8088-class machine.
+- **Milestone 3:** automated transfer and executable deployment tests in emulator, including interrupted transfers and recovery; validate on `smokey`.
+- **Milestone 4:** boot from a **real emulated BIOS disk image**, image it through the virtual serial link, and compare the result with known fixture bytes. Confirm BIOS drive numbering, geometry, and read failure reporting. Repeat representative tests in 86Box and on real media.
+- **CI:** prioritize Rust unit tests and deterministic host/virtual-client integration tests first; add headless emulator smoke tests only after startup, ROM provisioning, and serial connectivity are reproducible.
+
+Detailed matrix and setup guidance: [testing](testing.md).

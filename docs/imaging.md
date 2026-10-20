@@ -63,3 +63,9 @@ BIOS/logical reads do not preserve magnetic flux, weak bits, timing, copy-protec
 - Image sidecar format and stable error-map representation.
 - Retry policy and fill bytes for unreadable ranges.
 - Handling drives larger than CHS BIOS limits on older PCs.
+
+## Emulator-based image validation
+
+Use DOSBox-X for initial end-to-end tests and 86Box for more representative BIOS/controller behavior. Construct deterministic floppy and hard-disk fixtures, expose them as **BIOS-visible emulated drives** (not merely host-directory mounts), capture via the DOS client, and compare against expected logical sector bytes. Raw file equality is valid only when the emulator's presented geometry and logical addressing match the fixture format.
+
+Use fault-injection in a mocked disk backend for deterministic read failures; emulator support for bad sectors varies and must not be assumed. Emulator success does not establish that real disks, unusual controllers, or copy protection are handled correctly. See [testing](testing.md).
