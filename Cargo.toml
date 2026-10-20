@@ -1,0 +1,25 @@
+[package]
+name = "sprocket"
+version = "0.1.0"
+edition = "2024"
+description = "Serial Protocol Rocket"
+repository = "https://github.com/plicease/sprocket"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+
+
+[package.metadata.deb]
+maintainer = "Nobody <devnull@wdlabs.com>"
+copyright = "Nobody"
+extended-description = """\
+Serial Protocol Rocket"""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/sprocket", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/sprocket/README.md", "644"],
+    ["LICENSE", "usr/share/doc/sprocket/LICENSE", "644"],
+]
+
