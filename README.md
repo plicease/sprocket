@@ -14,6 +14,20 @@ SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging 
 - [Roadmap](docs/roadmap.md): staged implementation and acceptance criteria.
 - [Testing and emulation](docs/testing.md): DOSBox-X, 86Box, CI, and real-hardware validation.
 
+## Usage (Milestone 1: XMODEM sender)
+
+The host can send a file to any XMODEM receiver (e.g. HyperTerminal) without external tools such as `sz`/`sx`. Start the receiver first, then run:
+
+```sh
+sprocket send --protocol xmodem    --port /dev/ttyS0 --baud 9600 SPROCKET.EXE
+sprocket send --protocol xmodem-1k --port /dev/ttyS0 --baud 9600 SPROCKET.EXE
+sprocket send --protocol xmodem    --port tcp://127.0.0.1:5000 FILE   # emulator null-modem link
+```
+
+The line is always 8N1 with no flow control. `tcp://` is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). XMODEM pads the final block with `0x1A`; the sender reports the exact original length so the received file can be truncated and checked. See [bootstrap](docs/bootstrap.md#xmodem-exact-length-limitation).
+
+Not yet validated on `smokey`/HyperTerminal; tested against synthetic receivers (`cargo test`) and over a Linux PTY pair.
+
 ## Intended repository layout
 
 ```text
