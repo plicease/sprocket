@@ -13,8 +13,8 @@ serialport = { version = "4.10.1", default-features = false }
 
 
 [package.metadata.deb]
-maintainer = "Nobody <devnull@wdlabs.com>"
-copyright = "Nobody"
+maintainer = "Graham Ollis <plicease@cpan.org>"
+copyright = "2026, Graham Ollis"
 extended-description = """\
 Serial Protocol Rocket"""
 section = "utils"
