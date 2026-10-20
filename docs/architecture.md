@@ -4,7 +4,7 @@
 
 ## Purpose and scope
 
-SPROCKET provides (1) serial file transfer, including to systems without a SPROCKET client; (2) installation and updating of vintage clients; and (3) preservation-oriented logical disk imaging. These are complementary, independently useful features.
+SPROCKET provides (1) serial file transfer, including to systems without a SPROCKET client; (2) an interactive terminal file server ("smart terminal" mode) that any terminal program can browse; (3) installation and updating of vintage clients; and (4) preservation-oriented logical disk imaging. These are complementary, independently useful features.
 
 ## Requirements
 
@@ -21,8 +21,11 @@ SPROCKET provides (1) serial file transfer, including to systems without a SPROC
 
 ```text
 Rust host CLI
-  ├── serial port configuration / I/O
-  ├── standard-protocol sender (XMODEM, XMODEM-1K initially)
+  ├── transports: serial port / TCP (emulator) / in-memory (tests)
+  ├── standard-protocol senders (XMODEM, XMODEM-1K, ZMODEM)
+  ├── terminal file server (`sprocket serve`)
+  │     ├── plain-ASCII menu and line editing
+  │     └── root-confined, read-only file tree
   ├── native SPROCKET protocol engine
   │     ├── session negotiation and capabilities
   │     ├── file transfer and client deployment
@@ -37,7 +40,24 @@ Rust host CLI
        └── disk access adapter
 ```
 
-Legacy protocol transfers work with third-party terminal programs and do not require a native client.
+Legacy protocol transfers and the terminal file server work with third-party terminal programs and do not require a native client.
+
+## Terminal file server
+
+`sprocket serve` turns the serial line into a small, keyboard-driven download menu. Its layers are kept separate so each can be reused or tested alone:
+
+| Layer | Module | Responsibility |
+| --- | --- | --- |
+| Transport | `transport` | Byte stream with read timeouts; serial, TCP, or in-memory. Knows nothing about menus or protocols. |
+| Menu | `serve` | Banner, listing, paging, line editing, protocol choice, result messages. Output is plain ASCII with CR LF line endings and no ANSI sequences, and fits 80×24. |
+| File tree | `files` | Lists and reads files beneath the configured root only. |
+| Transfer | `xmodem`, `zmodem` | Send one file over a `Transport`; report progress and typed errors. Shared with `sprocket send`. |
+
+The menu hands the transport to the selected protocol for the duration of a transfer, then discards leftover protocol bytes before redrawing. A transfer failure (cancel, timeout, no receiver) is reported on the terminal and in the host log, and the menu continues. Only transport I/O errors end the session. The CLI then reopens the port, which covers emulator restarts and dropped TCP links.
+
+**Filesystem confinement.** The root is canonicalized at startup. Every requested path must consist only of normal components (no `..`, no absolute paths), and its fully resolved form, after following symlinks, must still lie inside the root. Symlinks within the root are allowed; ones that lead out are hidden from listings and refused if requested. Hidden files, non-UTF-8 names, and special files are not listed. The server is download-only and never writes on the host. The check and the read are not atomic, so the root is assumed to be under the operator's control.
+
+**ZMODEM** uses the [`zmodem2`](https://crates.io/crates/zmodem2) crate (MIT OR Apache-2.0), a caller-driven state machine with no I/O of its own. SPROCKET's `zmodem` module supplies the transport loop, timeouts, ZRQINIT repetition, and detection of a receiver's raw CAN cancel sequence. Data subpackets use CRC-32.
 
 ## Interfaces and isolation
 
@@ -62,7 +82,7 @@ The host's serial I/O should be separated from packet processing so protocol tes
 
 ## Open questions
 
-- Whether the host CLI should use `sprocket send`, `sprocket image`, and `sprocket install` exactly as sketched.
+- Whether the host CLI should use `sprocket send`, `sprocket serve`, `sprocket image`, and `sprocket install` exactly as sketched.
 - DOS minimum version (3.3 is a provisional target).
 - Whether future hosts on macOS/Windows are supported immediately or after Linux stabilization.
 

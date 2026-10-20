@@ -20,7 +20,7 @@
 2. **Session**: hello/version, capability negotiation, errors, cancellation.
 3. **Operations**: file send/receive, storage enumeration, storage reads, status.
 
-A standard-protocol XMODEM sender is a **separate host facility**, not a packet type in the native protocol.
+The standard-protocol senders (XMODEM, XMODEM-1K, ZMODEM) and the interactive terminal file server (`sprocket serve`) are **separate host facilities**, not part of this protocol. They talk to ordinary terminal programs and share only the host's transport layer with the native engine. Nothing in their menus or ZMODEM framing is a native message type, and they impose no requirements on native framing.
 
 ## Illustrative frame (proposal, not normative)
 

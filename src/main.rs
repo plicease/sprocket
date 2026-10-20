@@ -7,8 +7,9 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use sprocket::transport;
+use sprocket::files::Root;
 use sprocket::xmodem::{self, Event, RetryReason};
+use sprocket::{serve, transport, zmodem};
 
 #[derive(Parser)]
 #[command(version, about = "Serial Protocol Rocket")]
@@ -21,6 +22,8 @@ struct Cli {
 enum Command {
     /// Send a file to a receiver using a standard serial transfer protocol
     Send(SendArgs),
+    /// Serve a read-only file menu to a terminal program on the serial line
+    Serve(ServeArgs),
 }
 
 #[derive(Args)]
@@ -45,8 +48,32 @@ struct SendArgs {
     file: PathBuf,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Args)]
+struct ServeArgs {
+    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
+    #[arg(long)]
+    port: String,
+
+    /// Baud rate (serial devices only); the line is always 8N1, no flow control
+    #[arg(long, default_value_t = 9600)]
+    baud: u32,
+
+    /// Directory to serve; nothing outside it is reachable
+    #[arg(long)]
+    root: PathBuf,
+
+    /// Seconds without input before a session returns to the banner
+    #[arg(long, default_value_t = 600)]
+    idle: u64,
+
+    /// Seconds a transfer waits for the receiver to start
+    #[arg(long, default_value_t = 60)]
+    wait: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Protocol {
+    Zmodem,
     Xmodem,
     #[value(name = "xmodem-1k")]
     Xmodem1k,
@@ -55,6 +82,36 @@ enum Protocol {
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Send(args) => send(args),
+        Command::Serve(args) => serve(args),
+    }
+}
+
+fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let root =
+        Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
+    let options = serve::Options {
+        idle_timeout: Duration::from_secs(args.idle),
+        start_timeout: Duration::from_secs(args.wait),
+    };
+    eprintln!(
+        "serving {} on {} ({} 8N1, no flow control); press Ctrl-C to stop",
+        root.path().display(),
+        args.port,
+        args.baud
+    );
+    // Keep serving across emulator restarts and dropped TCP links.
+    loop {
+        match transport::open(&args.port, args.baud) {
+            Ok(mut link) => {
+                eprintln!("connected to {}", args.port);
+                let mut log = |msg: &str| eprintln!("{msg}");
+                if let Err(e) = serve::run(link.as_mut(), &root, &options, &mut log) {
+                    eprintln!("connection lost: {e}");
+                }
+            }
+            Err(e) => eprintln!("cannot open {}: {e}", args.port),
+        }
+        std::thread::sleep(Duration::from_secs(5));
     }
 }
 
@@ -64,9 +121,13 @@ fn send(args: SendArgs) -> anyhow::Result<()> {
     let mut link = transport::open(&args.port, args.baud)
         .with_context(|| format!("cannot open {}", args.port))?;
 
+    if args.protocol == Protocol::Zmodem {
+        return send_zmodem(&args, link.as_mut(), &data);
+    }
+
     let variant = match args.protocol {
-        Protocol::Xmodem => xmodem::Variant::Xmodem,
         Protocol::Xmodem1k => xmodem::Variant::Xmodem1k,
+        _ => xmodem::Variant::Xmodem,
     };
     let options = xmodem::Options {
         start_timeout: Duration::from_secs(args.wait),
@@ -138,5 +199,51 @@ fn send(args: SendArgs) -> anyhow::Result<()> {
     eprintln!(
         "note: XMODEM acknowledgements do not prove the saved file is byte-identical; verify on the receiver."
     );
+    Ok(())
+}
+
+fn send_zmodem(
+    args: &SendArgs,
+    link: &mut dyn transport::Transport,
+    data: &[u8],
+) -> anyhow::Result<()> {
+    let name = args
+        .file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let options = zmodem::Options {
+        start_timeout: Duration::from_secs(args.wait),
+        ..zmodem::Options::default()
+    };
+    eprintln!(
+        "sending {} ({} bytes) by ZMODEM on {}; waiting up to {}s for the receiver",
+        args.file.display(),
+        data.len(),
+        args.port,
+        args.wait,
+    );
+    let tty = io::stderr().is_terminal();
+    let modified = fs::metadata(&args.file).and_then(|m| m.modified()).ok();
+    let summary = zmodem::send(
+        link,
+        &zmodem::wire_name(&name),
+        data,
+        modified,
+        &options,
+        |event| {
+            let zmodem::Event::Progress { sent, total } = *event;
+            if tty {
+                let percent = (sent * 100).checked_div(total).unwrap_or(100);
+                eprint!("\r{sent}/{total} bytes ({percent}%)");
+                let _ = io::stderr().flush();
+            }
+        },
+    );
+    if tty {
+        eprintln!();
+    }
+    let summary = summary.context("ZMODEM transfer failed")?;
+    eprintln!("transfer complete: {} bytes", summary.bytes);
     Ok(())
 }

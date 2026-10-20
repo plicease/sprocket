@@ -18,6 +18,26 @@
 
 **Acceptance:** transfer works without calling an external Linux transfer utility.
 
+XMODEM bootstrap keeps priority over everything below. It must stay working and documented as the first-install path for any terminal program.
+
+## Milestone 1A — Smart terminal mode: menu and XMODEM
+
+- `sprocket serve`: plain-ASCII, keyboard-driven browser of a configured root directory over the serial line.
+- Explicit XMODEM / XMODEM-1K download of a selected file; the receiver is started manually.
+- Root confinement (no `..` or symlink escape), read-only, idle timeout, reconnect after link loss.
+
+**Acceptance:** a plain terminal (no ANSI) browses the tree, downloads a file by XMODEM, and returns to the menu after success, cancellation, or error.
+
+## Milestone 1B — ZMODEM and auto-download
+
+- Built-in ZMODEM sender (filename, exact length, CRC-32, cancellation, ZRPOS recovery) for `sprocket serve` and `sprocket send`.
+- ZMODEM as the default menu choice; its ZRQINIT start triggers auto-download in terminals that support it.
+- Validate with at least one period terminal with auto-download (e.g. Telix or Procomm Plus under DOS).
+
+**Acceptance:** a ZMODEM-capable terminal with auto-receive enabled downloads the selected file without manual receiver setup, byte-identical and under its original name. Terminals without ZMODEM still succeed via XMODEM.
+
+**Status:** 1A and 1B are implemented and tested against in-memory receivers and lrzsz over a PTY. Emulator and period-terminal validation is pending. Resume of interrupted ZMODEM transfers (ZCRECOV) is not implemented.
+
 ## Milestone 2 — Native protocol and DOS client skeleton
 
 - Freeze a minimal v1 framing/negotiation subset and publish test vectors.
@@ -46,7 +66,7 @@
 ## Milestone 5 — Broader hardware and protocols
 
 - Add capabilities needed by a real second client (e.g. Apple II).
-- Consider YMODEM/ZMODEM, additional host platforms, and other imaging modes.
+- Consider YMODEM, ZMODEM resume and upload, additional host platforms, and other imaging modes.
 - Extend only on demonstrated hardware needs, preserving protocol compatibility.
 
 ## Cross-cutting checks
@@ -58,6 +78,7 @@
 ## Emulator and CI acceptance gates
 
 - **Milestone 1:** host XMODEM packet tests with synthetic receiver, then HyperTerminal on `smokey`; emulation of the DOS client is not required yet.
+- **Milestones 1A/1B:** scripted menu sessions over in-memory and PTY links, including lrzsz `rz`/`rx` interoperability. Then a DOS terminal program under DOSBox-X connected to `sprocket serve` over TCP, checking ZMODEM auto-download, manual XMODEM, cancellation, and exact file contents. Repeat on real hardware.
 - **Milestone 2:** run DOS client under DOSBox-X with a virtual null-modem/TCP link to the Rust host; test protocol handshake, timeout, corruption and retry. Repeat critical paths under 86Box with an 8088-class machine.
 - **Milestone 3:** automated transfer and executable deployment tests in emulator, including interrupted transfers and recovery; validate on `smokey`.
 - **Milestone 4:** boot from a **real emulated BIOS disk image**, image it through the virtual serial link, and compare the result with known fixture bytes. Confirm BIOS drive numbering, geometry, and read failure reporting. Repeat representative tests in 86Box and on real media.

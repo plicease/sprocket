@@ -367,16 +367,16 @@ pub fn crc16(data: &[u8]) -> u16 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::transport::{MemoryTransport, memory_pair};
+    use crate::transport::{Corrupting, MemoryTransport, memory_pair};
     use std::thread;
 
     const RECEIVER_WAIT: Duration = Duration::from_secs(5);
 
     /// Faults injected by the synthetic receiver.
     #[derive(Default, Clone)]
-    struct Faults {
+    pub(crate) struct Faults {
         /// Withhold the ACK for this (1-based) block once.
         drop_ack: Option<u32>,
         /// Send CAN CAN instead of ACK after this many blocks.
@@ -386,15 +386,15 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct Received {
-        data: Vec<u8>,
+    pub(crate) struct Received {
+        pub(crate) data: Vec<u8>,
         small_blocks: u32,
         large_blocks: u32,
         naks: u32,
     }
 
     /// Minimal XMODEM receiver used to exercise the sender.
-    fn receive(t: &mut MemoryTransport, start: u8, faults: Faults) -> Received {
+    pub(crate) fn receive(t: &mut MemoryTransport, start: u8, faults: Faults) -> Received {
         let crc = start == CRC_REQUEST;
         let mut out = Received::default();
         let mut expected: u8 = 1;
@@ -460,32 +460,6 @@ mod tests {
                 }
                 other => panic!("unexpected byte {other:#04x}"),
             }
-        }
-    }
-
-    /// Wraps a transport and flips one bit of the `index`th written byte.
-    struct Corrupting<T> {
-        inner: T,
-        index: usize,
-        written: usize,
-    }
-
-    impl<T: Transport> Transport for Corrupting<T> {
-        fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>> {
-            self.inner.read_byte(timeout)
-        }
-
-        fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-            let mut buf = buf.to_vec();
-            if let Some(b) = self
-                .index
-                .checked_sub(self.written)
-                .and_then(|i| buf.get_mut(i))
-            {
-                *b ^= 0x01;
-            }
-            self.written += buf.len();
-            self.inner.write_all(&buf)
         }
     }
 
@@ -664,11 +638,7 @@ mod tests {
     fn corrupted_block_is_retransmitted() {
         let (s, r) = memory_pair();
         // Byte 3 of block 2's payload: 133 bytes per CRC block.
-        let mut s = Corrupting {
-            inner: s,
-            index: 133 + 3 + 3,
-            written: 0,
-        };
+        let mut s = Corrupting::new(s, 133 + 3 + 3);
         let data = sample(400);
         let (result, events, rx) = run(
             &mut s,

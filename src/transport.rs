@@ -162,6 +162,45 @@ impl Transport for MemoryTransport {
     }
 }
 
+/// Wraps a transport and flips one bit of the `index`th written byte.
+#[cfg(test)]
+pub(crate) struct Corrupting<T> {
+    inner: T,
+    index: usize,
+    written: usize,
+}
+
+#[cfg(test)]
+impl<T> Corrupting<T> {
+    pub(crate) fn new(inner: T, index: usize) -> Self {
+        Self {
+            inner,
+            index,
+            written: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<T: Transport> Transport for Corrupting<T> {
+    fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>> {
+        self.inner.read_byte(timeout)
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        let mut buf = buf.to_vec();
+        if let Some(b) = self
+            .index
+            .checked_sub(self.written)
+            .and_then(|i| buf.get_mut(i))
+        {
+            *b ^= 0x01;
+        }
+        self.written += buf.len();
+        self.inner.write_all(&buf)
+    }
+}
+
 fn is_timeout(e: &io::Error) -> bool {
     matches!(
         e.kind(),
