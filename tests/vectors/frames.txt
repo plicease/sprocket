@@ -1,0 +1,52 @@
+# Native protocol v1 valid frames (docs/protocol-v1.md section 7).
+# Records are separated by blank lines; each line is a field name and its value.
+# body: unescaped header and payload; crc: CRC-16/CCITT-FALSE of body;
+# wire: the encoded frame including both 7E delimiters. Hex bytes are space-separated.
+
+name   hello
+note   HELLO, session 5A3C, max payload 1024
+body   01 3c 5a 00 53 50 52 4b 01 00 00 04
+crc    20ba
+wire   7e 01 3c 5a 00 53 50 52 4b 01 00 00 04 ba 20 7e
+
+name   hello_reply
+note   HELLO_REPLY, max 512, FILE_WRITE+FILE_REPLACE, DOS, "0.1.0"
+body   81 3c 5a 00 53 50 52 4b 01 00 00 02 03 00 00 00 01 05 30 2e 31 2e 30
+crc    14f4
+wire   7e 81 3c 5a 00 53 50 52 4b 01 00 00 02 03 00 00 00 01 05 30 2e 31 2e 30 f4 14 7e
+
+name   ping
+note   PING seq 1, payload 7e 7d 00 ff (both escapes)
+body   02 3c 5a 01 7e 7d 00 ff
+crc    8d3f
+wire   7e 02 3c 5a 01 7d 5e 7d 5d 00 ff 3f 8d 7e
+
+name   ping_reply
+note   PING reply to it
+body   82 3c 5a 01 7e 7d 00 ff
+crc    70be
+wire   7e 82 3c 5a 01 7d 5e 7d 5d 00 ff be 70 7e
+
+name   error
+note   ERROR UNSUPPORTED, seq 2, no message
+body   ff 3c 5a 02 01 00 00 00
+crc    6a36
+wire   7e ff 3c 5a 02 01 00 00 00 36 6a 7e
+
+name   pending
+note   PENDING, seq 3
+body   fe 3c 5a 03
+crc    d804
+wire   7e fe 3c 5a 03 04 d8 7e
+
+name   ping_crc_escape
+note   PING seq 4, payload 76; the CRC contains an escaped byte
+body   02 3c 5a 04 76
+crc    7dce
+wire   7e 02 3c 5a 04 76 ce 7d 5d 7e
+
+name   ping_empty
+note   PING seq 5, empty payload (shortest valid frame)
+body   02 3c 5a 05
+crc    68bd
+wire   7e 02 3c 5a 05 bd 68 7e
