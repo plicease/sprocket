@@ -81,6 +81,8 @@ Initial use is a directly attached, operator-controlled serial cable. No authent
 
 ## Before implementation: decisions to ratify
 
+A concrete proposal for all seven is in [protocol v1 proposal](protocol-v1.md), pending review.
+
 1. Framing and byte escaping, CRC parameters, maximum packet size.
 2. Sequence/ACK/retry behavior, timeout and reconnect semantics.
 3. Exact HELLO fields and version compatibility rules.

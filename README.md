@@ -8,6 +8,7 @@ SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging 
 
 - [Architecture](docs/architecture.md): scope, components, platform independence, milestones.
 - [Protocol](docs/protocol.md): wire-level requirements and proposed packet design.
+- [Protocol v1 proposal](docs/protocol-v1.md): concrete framing, sequencing, messages and test vectors, for review.
 - [Bootstrap and transfers](docs/bootstrap.md): standard protocols, smart terminal mode, first installation, upgrades, recovery.
 - [Disk imaging](docs/imaging.md): addressing, integrity, error reporting, safety.
 - [Licensing](docs/licensing.md): MIT project policy and third-party obligations.
