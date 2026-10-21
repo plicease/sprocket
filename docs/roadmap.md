@@ -36,7 +36,7 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 
 **Acceptance:** a ZMODEM-capable terminal with auto-receive enabled downloads the selected file without manual receiver setup, byte-identical and under its original name. Terminals without ZMODEM still succeed via XMODEM.
 
-**Status:** 1A and 1B are implemented and tested against in-memory receivers and lrzsz over a PTY. Emulator and period-terminal validation is pending. Resume of interrupted ZMODEM transfers (ZCRECOV) is not implemented.
+**Status:** 1A and 1B are implemented and tested against in-memory receivers and lrzsz over a PTY. On real hardware (2026-10-20), `twintwist` → `smokey` Windows 95 HyperTerminal at 38400 8N1, ZMODEM auto-downloaded a file with matching MD5 sums, meeting the 1B auto-download acceptance with a period terminal. Pending: XMODEM and cancellation on hardware, DOS terminal programs, and emulator runs. Resume of interrupted ZMODEM transfers (ZCRECOV) is not implemented.
 
 ## Milestone 2 — Native protocol and DOS client skeleton
 

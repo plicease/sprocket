@@ -53,7 +53,7 @@ On the vintage machine, connect at the same settings and press ENTER. Pick a fil
 
 The menu returns after each transfer, cancellation (Ctrl-X), or error. Only files under `--root` are reachable: `..` and symlinks that lead outside it are refused, and hidden files are not listed. Nothing on the host is ever written. A session ends on `Q`, or after `--idle` seconds (default 600) without input. `sprocket serve` keeps running and reopens the port if it fails or a TCP link drops.
 
-Do not assume a given terminal supports ZMODEM or auto-download (for example, Windows 95 HyperTerminal is unverified). XMODEM is always offered.
+Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware). For other terminals, do not assume ZMODEM or auto-download support. XMODEM is always offered.
 
 ### Native SPROCKET
 
@@ -61,7 +61,11 @@ The native protocol and DOS client are designed but not yet implemented; see [pr
 
 ### Validation status
 
-Tested with in-memory receivers (`cargo test`), and over a Linux PTY pair against lrzsz `rz`/`rx`. Not yet validated on `smokey`, in emulators, or with period terminal programs. See [testing](docs/testing.md).
+Tested with in-memory receivers (`cargo test`), and over a Linux PTY pair against lrzsz `rz`/`rx`.
+
+Real hardware, 2026-10-20: `sprocket serve` on `twintwist` (`/dev/ttyS0`) to Windows 95 HyperTerminal on `smokey`, over a null-modem cable at 38400 8N1, no flow control. The ZMODEM download started automatically, and the MD5 sums matched on both sides.
+
+Not yet validated on real hardware: XMODEM/XMODEM-1K and cancellation through the menu, and `sprocket send`. Nothing has been validated in emulators or with DOS terminal programs yet. See [testing](docs/testing.md).
 
 ## Intended repository layout
 

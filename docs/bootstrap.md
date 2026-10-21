@@ -32,7 +32,7 @@ sprocket send --protocol xmodem --port /dev/ttyS0 --baud 9600 SPROCKET.EXE
 sprocket send --protocol xmodem-1k --port /dev/ttyS0 --baud 9600 SPROCKET.EXE
 ```
 
-The terminal receiver must already be in receive mode. HyperTerminal supports Xmodem and 1K Xmodem. The host should print clear progress, retries, and success/failure. Never treat completion of serial transmission alone as proof that the received file is byte-identical.
+The terminal receiver must already be in receive mode. HyperTerminal supports Xmodem and 1K Xmodem. Windows 95 HyperTerminal also auto-downloads ZMODEM: verified on `smokey` with `sprocket serve` at 38400 baud, with matching MD5 sums. The host should print clear progress, retries, and success/failure. Never treat completion of serial transmission alone as proof that the received file is byte-identical.
 
 ### XMODEM exact-length limitation
 
