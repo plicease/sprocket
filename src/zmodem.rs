@@ -27,6 +27,12 @@ const CANCEL_RUN: u32 = 5;
 /// Receiver-to-sender header errors tolerated before giving up.
 const MAX_WIRE_ERRORS: u32 = 20;
 
+/// Advice for [`Error::Skipped`]. Windows 95 HyperTerminal declines a ZMODEM
+/// auto-download while its Receive File protocol is still set to Xmodem
+/// (e.g. after an XMODEM receive), then accepts the next one.
+pub const SKIP_HINT: &str = "If the receiver is HyperTerminal, set Transfer > Receive File > \
+     protocol to Zmodem (an earlier XMODEM receive leaves it on Xmodem), then try again.";
+
 /// Sender settings.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -142,8 +148,10 @@ pub fn send(
     sender.finish()?;
 
     let result = drive(&mut sender, transport, data, options, &mut progress);
+    // A skip has already been answered with ZFIN; cancelling would only
+    // put Ctrl-X and backspaces on the receiver's screen.
     if let Err(e) = &result
-        && !matches!(e, Error::Cancelled | Error::Io(_))
+        && !matches!(e, Error::Cancelled | Error::Skipped | Error::Io(_))
     {
         sender.abort();
         while let Action::WriteWire(bytes) = sender.poll() {
@@ -172,6 +180,7 @@ fn drive(
     let mut wire_errors = 0;
     let mut can_run = 0;
     let mut file_done = false;
+    let mut skipped = false;
     let mut session_done = false;
 
     loop {
@@ -195,9 +204,15 @@ fn drive(
                 // The library reports a ZSKIP as a completed file; only a
                 // file whose data all went out was actually transferred.
                 if sent < total {
-                    return Err(Error::Skipped);
+                    // There is no other file to offer, so end the session
+                    // with ZFIN as the protocol expects.
+                    skipped = true;
+                    if sender.finish().is_err() {
+                        return Err(Error::Skipped);
+                    }
+                } else {
+                    file_done = true;
                 }
-                file_done = true;
             }
             Action::Event(ZEvent::SessionCompleted) => session_done = true,
             Action::Event(ZEvent::Aborted) => return Err(Error::Cancelled),
@@ -220,6 +235,8 @@ fn drive(
                     left.min(options.response_timeout)
                 };
                 match transport.read_byte(wait)? {
+                    // The file was declined; an unanswered ZFIN changes nothing.
+                    None if skipped => return Err(Error::Skipped),
                     None => {
                         if started {
                             timeouts += 1;
@@ -280,17 +297,31 @@ pub(crate) mod test_receiver {
         pub size: Option<u32>,
         pub modified: Option<u32>,
         pub data: Vec<u8>,
+        /// Every byte read from the sender.
+        pub raw: Vec<u8>,
     }
 
     /// Receive one session with the `zmodem2` receiver. If `cancel_after`
     /// is set, send a raw CAN run once that many bytes have arrived.
     pub fn receive(t: &mut MemoryTransport, cancel_after: Option<usize>) -> Received {
+        run(t, cancel_after, false)
+    }
+
+    /// Decline the offered file with ZSKIP, as HyperTerminal does when its
+    /// receive protocol is still set to Xmodem.
+    pub fn skip(t: &mut MemoryTransport) -> Received {
+        run(t, None, true)
+    }
+
+    fn run(t: &mut MemoryTransport, cancel_after: Option<usize>, skip: bool) -> Received {
         let mut r = Receiver::new().unwrap();
+        r.set_manual_file_accept(skip);
         let mut out = Received {
             name: Vec::new(),
             size: None,
             modified: None,
             data: Vec::new(),
+            raw: Vec::new(),
         };
         loop {
             match r.poll() {
@@ -312,6 +343,9 @@ pub(crate) mod test_receiver {
                     out.name = info.name.to_vec();
                     out.size = info.size.map(Position::get);
                     out.modified = info.modified;
+                    if skip {
+                        r.skip_file().unwrap();
+                    }
                 }
                 Action::Event(ZEvent::SessionCompleted) => {
                     // The event precedes the receiver's ZFIN reply.
@@ -321,12 +355,15 @@ pub(crate) mod test_receiver {
                         r.wire_written(n);
                     }
                     // Collect the sender's closing "OO".
-                    while let Ok(Some(_)) = t.read_byte(Duration::from_millis(200)) {}
+                    while let Ok(Some(b)) = t.read_byte(Duration::from_millis(200)) {
+                        out.raw.push(b);
+                    }
                     return out;
                 }
                 Action::Event(ZEvent::Aborted) => panic!("receiver aborted"),
                 Action::Idle => match t.read_byte(Duration::from_secs(5)).unwrap() {
                     Some(b) => {
+                        out.raw.push(b);
                         let _ = r.submit_wire(&[b]);
                     }
                     None => r.timeout().unwrap(),
@@ -339,7 +376,7 @@ pub(crate) mod test_receiver {
 
 #[cfg(test)]
 mod tests {
-    use super::test_receiver::receive;
+    use super::test_receiver::{self, receive};
     use super::*;
     use crate::transport::{Corrupting, memory_pair};
     use std::thread;
@@ -414,6 +451,22 @@ mod tests {
         let result = send(&mut s, b"TEST.BIN", &data, None, &fast(), |_| {});
         rx.join().unwrap();
         assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+    }
+
+    #[test]
+    fn skipped_file_ends_session_without_cancel() {
+        let (mut s, mut r) = memory_pair();
+        let data = sample(5000);
+        let rx = thread::spawn(move || test_receiver::skip(&mut r));
+        let result = send(&mut s, b"TEST.BIN", &data, None, &fast(), |_| {});
+        assert!(matches!(result, Err(Error::Skipped)), "{result:?}");
+        let rx = rx.join().unwrap();
+        assert_eq!(rx.name, b"TEST.BIN");
+        assert!(rx.data.is_empty());
+        assert!(
+            !rx.raw.windows(5).any(|w| w == [CAN; 5]),
+            "cancel sequence sent"
+        );
     }
 
     #[test]

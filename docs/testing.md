@@ -100,6 +100,8 @@ For the menu, a script on `/tmp/ptyB` presses ENTER, selects a file, starts `rz`
 
 **Tier 2/3.** Repeat auto-download and fallback on 86Box and on `smokey`/NuXT with real UARTs, at 9600 baud first, then higher rates. Windows 95 HyperTerminal on `smokey` has been verified to auto-download ZMODEM from `sprocket serve` at 38400 baud, with matching MD5 sums (2026-10-20). Its manual XMODEM and XMODEM-1K receives through the menu were also verified (MD5 match after truncation), with the menu returning after each. `sprocket send` over XMODEM to HyperTerminal also matched by MD5 after truncation, and a cancel in HyperTerminal mid-transfer was reported cleanly by the sender. Cancellation through the menu remains to be checked, and DOS-mode terminals still need testing.
 
+The first ZMODEM download after an XMODEM receive was skipped by HyperTerminal (#3). A `--trace` capture showed byte-identical ZFILE frames for the skipped attempt and the successful retry: HyperTerminal answered the first with ZSKIP and the second with ZRPOS. Setting *Transfer → Receive File* back to Zmodem after the XMODEM receive avoided the skip. When retesting the bootstrap-then-serve sequence, reset that setting, or expect and accept one skip.
+
 ## Open questions
 
 - Exact DOSBox-X and 86Box versions, launch/configuration commands and ROM provisioning strategy.

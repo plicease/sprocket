@@ -24,6 +24,9 @@ const MAX_INPUT: usize = 16;
 const BANNER_WAIT: Duration = Duration::from_secs(3600);
 /// Quiet period used to discard protocol leftovers after a transfer.
 const SETTLE: Duration = Duration::from_millis(500);
+/// Quiet period after ZMODEM. Windows 95 HyperTerminal repeats its ZFIN about
+/// 730 ms after the session ends; a shorter wait lets it reach the menu as input.
+const ZMODEM_SETTLE: Duration = Duration::from_millis(1500);
 
 /// Server settings.
 #[derive(Clone, Debug)]
@@ -107,8 +110,8 @@ impl<'a> Console<'a> {
     }
 
     /// Discard protocol leftovers so they are not read as menu input.
-    fn settle(&mut self) -> io::Result<()> {
-        self.t.drain(SETTLE)?;
+    fn settle(&mut self, quiet: Duration) -> io::Result<()> {
+        self.t.drain(quiet)?;
         self.after_cr = false;
         Ok(())
     }
@@ -235,6 +238,7 @@ fn transfer(
         data.len()
     ));
 
+    let mut hint = None;
     let outcome = match protocol {
         Protocol::Zmodem => {
             con.print(&format!(
@@ -256,6 +260,10 @@ fn transfer(
             ) {
                 Ok(summary) => Ok(format!("{} bytes", summary.bytes)),
                 Err(zmodem::Error::Io(e)) => return Err(e),
+                Err(e @ zmodem::Error::Skipped) => {
+                    hint = Some(zmodem::SKIP_HINT);
+                    Err(e.to_string())
+                }
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -287,7 +295,10 @@ fn transfer(
         }
     };
 
-    con.settle()?;
+    con.settle(match protocol {
+        Protocol::Zmodem => ZMODEM_SETTLE,
+        Protocol::Xmodem | Protocol::Xmodem1k => SETTLE,
+    })?;
     match outcome {
         Ok(detail) => {
             log(&format!("sent {}: {detail}", rel.display()));
@@ -295,9 +306,32 @@ fn transfer(
         }
         Err(reason) => {
             log(&format!("transfer of {} failed: {reason}", rel.display()));
-            con.print(&format!("\nTransfer failed: {reason}.\n"))
+            con.print(&format!("\nTransfer failed: {reason}.\n"))?;
+            match hint {
+                Some(hint) => con.print(&wrap(hint, 78)),
+                None => Ok(()),
+            }
         }
     }
+}
+
+/// Word-wrap `text` to `width` columns for terminals that do not wrap.
+fn wrap(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut column = 0;
+    for word in text.split_whitespace() {
+        if column > 0 && column + 1 + word.len() > width {
+            out.push('\n');
+            column = 0;
+        } else if column > 0 {
+            out.push(' ');
+            column += 1;
+        }
+        out.push_str(word);
+        column += word.len();
+    }
+    out.push('\n');
+    out
 }
 
 /// The current directory as shown to the user, e.g. `/games/infocom`.
@@ -463,6 +497,53 @@ mod tests {
         c.expect(PROMPT);
         c.send("q\r");
         c.finish().unwrap();
+    }
+
+    #[test]
+    fn late_zfin_is_not_menu_input() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send(
+            "2
+
+",
+        );
+        c.expect("five times to cancel.\r\n");
+        zmodem::test_receiver::receive(&mut c.t, None);
+        // As captured from HyperTerminal: a repeated ZFIN ~730 ms after "OO".
+        thread::sleep(Duration::from_millis(550));
+        c.t.write_all(b"**\x18B0800000000022d\r\x8a").unwrap();
+        let out = c.expect(PROMPT);
+        assert!(out.contains("Transfer complete"), "{out}");
+        c.send("q\r");
+        let out = c.expect("Goodbye.");
+        assert!(!out.contains("Invalid choice"), "{out}");
+        assert!(!out.contains("**B08"), "ZFIN echoed: {out}");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn zmodem_skip_explains_and_returns_to_menu() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("2\rz\r");
+        c.expect("five times to cancel.\r\n");
+        zmodem::test_receiver::skip(&mut c.t);
+        let out = c.expect(PROMPT);
+        assert!(
+            out.contains("Transfer failed: receiver skipped the file."),
+            "{out}"
+        );
+        assert!(out.contains("Receive File >"), "{out}");
+        assert!(out.lines().all(|l| l.len() <= 80), "{out}");
+        c.send("q\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn wrap_breaks_at_width() {
+        assert_eq!(wrap("aaa bbb ccc", 7), "aaa bbb\nccc\n");
+        assert_eq!(wrap("aaa", 2), "aaa\n");
     }
 
     #[test]

@@ -18,6 +18,8 @@ With XMODEM, the **receiver** starts the transfer: it sends `C` (CRC-16) or NAK 
 
 With ZMODEM, the **sender** starts the transfer by sending ZRQINIT, repeated about every 10 seconds until a receiver answers. Many terminal programs recognize it and start receiving automatically (auto-download), but this is **terminal-dependent**. Some need it enabled in their settings, others lack it, and some have no ZMODEM at all. Without auto-download, the user starts a ZMODEM receive manually. A receiver cancels with five or more CAN characters.
 
+**HyperTerminal bug (Windows 95).** HyperTerminal's *Transfer → Receive File* dialog remembers the last protocol used. After an XMODEM receive, for example a bootstrap `sprocket send`, it stays on Xmodem, and HyperTerminal answers the next ZMODEM auto-download's ZFILE with ZSKIP. The second attempt succeeds. The host reports this as "receiver skipped the file", ends the session cleanly with ZFIN, and suggests setting the protocol back to Zmodem. This was confirmed with byte-level traces and by changing the setting (#3).
+
 XMODEM is the fallback that always remains available, both in `sprocket send` and in the terminal file server's menu.
 
 ## Smart terminal mode

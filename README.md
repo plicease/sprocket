@@ -53,7 +53,7 @@ On the vintage machine, connect at the same settings and press ENTER. Pick a fil
 
 The menu returns after each transfer, cancellation (Ctrl-X), or error. Only files under `--root` are reachable: `..` and symlinks that lead outside it are refused, and hidden files are not listed. Nothing on the host is ever written. A session ends on `Q`, or after `--idle` seconds (default 600) without input. `sprocket serve` keeps running and reopens the port if it fails or a TCP link drops.
 
-Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware). For other terminals, do not assume ZMODEM or auto-download support. XMODEM is always offered.
+Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware), but only while its *Transfer → Receive File* protocol is set to Zmodem. After an XMODEM receive, that setting stays on Xmodem, and HyperTerminal declines the next ZMODEM auto-download (reported as "receiver skipped the file"). Set the protocol back to Zmodem first, or just retry. For other terminals, do not assume ZMODEM or auto-download support. XMODEM is always offered.
 
 ### Native SPROCKET
 

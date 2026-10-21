@@ -305,6 +305,9 @@ fn send_zmodem(
     if tty {
         eprintln!();
     }
+    if let Err(zmodem::Error::Skipped) = &summary {
+        eprintln!("note: {}", zmodem::SKIP_HINT);
+    }
     let summary = summary.context("ZMODEM transfer failed")?;
     eprintln!("transfer complete: {} bytes", summary.bytes);
     Ok(())
