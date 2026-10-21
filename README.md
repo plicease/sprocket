@@ -65,7 +65,9 @@ Tested with in-memory receivers (`cargo test`), and over a Linux PTY pair agains
 
 Real hardware, 2026-10-20: `sprocket serve` on `twintwist` (`/dev/ttyS0`) to Windows 95 HyperTerminal on `smokey`, over a null-modem cable at 38400 8N1, no flow control. The ZMODEM download started automatically, with matching MD5 sums on both sides. XMODEM and XMODEM-1K downloads through the menu, started manually in HyperTerminal, also matched by MD5 once truncated to the original length. The menu returned after every transfer.
 
-Not yet validated on real hardware: cancellation from the terminal mid-transfer, and `sprocket send`. Nothing has been validated in emulators or with DOS terminal programs yet. See [testing](docs/testing.md).
+`sprocket send --protocol xmodem` to HyperTerminal on `smokey` (38400 8N1) delivered a 43,296-byte file. It matched by MD5 once truncated to the original length, which can be done with DEBUG on DOS/Windows. Cancelling in HyperTerminal mid-transfer stopped the sender cleanly with "transfer cancelled by receiver".
+
+Not yet validated on real hardware: cancellation through the `serve` menu or during ZMODEM, and `sprocket send` with XMODEM-1K or ZMODEM. Nothing has been validated in emulators or with DOS terminal programs yet. See [testing](docs/testing.md).
 
 ## Intended repository layout
 

@@ -18,6 +18,8 @@
 
 **Acceptance:** transfer works without calling an external Linux transfer utility.
 
+**Status:** met on 2026-10-20. `sprocket send --protocol xmodem` from `twintwist` to Windows 95 HyperTerminal on `smokey`, at 38400 8N1 rather than the planned 9600, delivered a 43,296-byte DOS executable with a matching MD5 after truncating the XMODEM padding. Cancelling in HyperTerminal was reported cleanly.
+
 XMODEM bootstrap keeps priority over everything below. It must stay working and documented as the first-install path for any terminal program.
 
 ## Milestone 1A — Smart terminal mode: menu and XMODEM
@@ -36,7 +38,7 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 
 **Acceptance:** a ZMODEM-capable terminal with auto-receive enabled downloads the selected file without manual receiver setup, byte-identical and under its original name. Terminals without ZMODEM still succeed via XMODEM.
 
-**Status:** 1A and 1B are implemented and tested against in-memory receivers and lrzsz over a PTY. On real hardware (2026-10-20), `twintwist` → `smokey` Windows 95 HyperTerminal at 38400 8N1, ZMODEM auto-downloaded a file with matching MD5 sums, and XMODEM and XMODEM-1K downloads matched once truncated to the original length. The menu returned after each transfer. This meets the 1A and 1B acceptance criteria. Pending: cancellation from the terminal on hardware, DOS terminal programs, and emulator runs. Resume of interrupted ZMODEM transfers (ZCRECOV) is not implemented.
+**Status:** 1A and 1B are implemented and tested against in-memory receivers and lrzsz over a PTY. On real hardware (2026-10-20), `twintwist` → `smokey` Windows 95 HyperTerminal at 38400 8N1, ZMODEM auto-downloaded a file with matching MD5 sums, and XMODEM and XMODEM-1K downloads matched once truncated to the original length. The menu returned after each transfer. This meets the 1A and 1B acceptance criteria. Pending: cancellation through the menu on hardware, DOS terminal programs, and emulator runs. Resume of interrupted ZMODEM transfers (ZCRECOV) is not implemented.
 
 ## Milestone 2 — Native protocol and DOS client skeleton
 
