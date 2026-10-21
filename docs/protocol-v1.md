@@ -76,7 +76,9 @@ With one request in flight, an 8-bit `seq` cannot be confused with an outstandin
 
 The client keeps one record of the **last request it accepted**: its `seq`, `type`, payload length and frame CRC (6 bytes), plus a state, `in progress` or `complete`. The record is set when execution **starts**, before any side effect.
 
-A request is a **duplicate** when its `session` is current and its `seq`, `type`, length and frame CRC all equal the record. Comparing the frame CRC stands in for comparing the payload; two different payloads with the same `seq` and type would have to collide in CRC-16 as well.
+A request is a **duplicate** when its `session` is current and its `seq`, `type`, length and frame CRC all equal the record. Comparing the frame CRC stands in for comparing the payload.
+
+**Accepted v1 tradeoff:** two *different* requests with the same `seq`, type, length and CRC-16 would be treated as identical, and the second would get the first one's cached response without being executed. With a correct host this cannot happen, because a new request always takes a new `seq`. It needs a host bug that reuses a `seq` with a different payload, and then a CRC-16 collision (about 1 in 65,536 for a random change of the same length). Storing the whole request, or a stronger hash of it, would close the gap, but would cost a second payload-sized buffer or CRC-32 work per frame on the smallest clients. v1 accepts the risk to keep the client's memory and code small.
 
 | Arriving request | Record state | Client action |
 | --- | --- | --- |

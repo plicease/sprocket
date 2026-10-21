@@ -54,6 +54,7 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 - Exact-length file transfers and end-to-end verification.
 - Safe receive-to-temp and upgrade/rollback workflow.
 - Optional tiny DOS bootstrap receiver and documented installation methods.
+- DOS client user documentation with a prominent warning to disable write-behind disk caching during transfers; interrupted-commit recovery depends on ordered writes.
 
 **Acceptance:** safely deploy a new DOS client over serial without relying on third-party Linux transfer tools; interruption leaves a working recovery path.
 

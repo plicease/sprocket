@@ -67,7 +67,7 @@ It also records the source identity (below), the unit size and count, and the ho
 ### Restarting
 
 1. Reload the map and image, and start a new session.
-2. Re-enumerate with `STORAGE_LIST` and **validate that the source is the same disk**: unit size and count, geometry, and capacity must match. A BIOS drive number and geometry alone do not identify a disk, so the host also compares a fingerprint taken at the start, such as the hashes of a few fixed units (unit 0 and a handful spread across the disk), read again on resume. If anything differs or cannot be checked, the host stops and asks the operator to confirm before continuing.
+2. Re-enumerate with `STORAGE_LIST` and **validate that the source is the same disk**: unit size and count, geometry, and capacity must match. A BIOS drive number and geometry alone do not identify a disk, so the host also compares a fingerprint taken at the start, such as the hashes of a few fixed units (unit 0 and a handful spread across the disk), read again on resume. If anything differs or cannot be checked, the host stops and asks the operator to confirm before continuing. In particular, if a fingerprint unit **cannot be read** on resume (a read error, or no response), the source identity is **unverified**: the host never treats an unreadable unit as a match, never silently drops it from the fingerprint, and does not continue without explicit operator confirmation, which it records in the manifest.
 3. Request only **missing** ranges. Requests need not be in order, and a failed unit never stops the pass: it is recorded and the host moves on.
 4. Afterwards, the operator may run **recovery passes** over failed and suspect units with a different retry policy (see marginal media).
 

@@ -64,6 +64,7 @@ Once installed, SPROCKET should transfer arbitrary files with exact lengths and 
 - Perform replacement only after the current program has exited or via a small separate loader.
 - On interrupted transfer, retain the old executable; delete or resume incomplete temporary data explicitly.
 - Avoid overwriting an active executable or assuming DOS rename/replace is atomic across all filesystems.
+- **Disable write-behind disk caching** (for example SMARTDRV's write cache) while receiving files. Recovery from an interrupted commit relies on writes reaching the disk in order ([protocol v1](protocol-v1.md#what-an-interrupted-commit-leaves-behind)). The DOS client's user documentation and its startup help must show this warning prominently, not only in the protocol specification.
 
 The host may eventually offer `sprocket install --client dos`, but automatic platform detection and deployment strategy are **future proposals**, not an initial requirement.
 

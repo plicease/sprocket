@@ -66,6 +66,7 @@ Resume ([imaging](imaging.md#resumable-imaging)) is tested first against a Rust 
 - **Interrupted while persisting progress:** kill the host between writing image data and syncing it, and while the map is being replaced. A torn or mismatched map makes the host reread the units it cannot vouch for; nothing is marked captured that is not in the image.
 - **Failed sectors:** units that fail are recorded with their platform codes and skipped; the pass continues; a later recovery pass rereads only those units. Units that return different data on reread are kept as conflicting reads.
 - **Different source disk:** resume against a fixture with different contents, and one with different geometry or capacity. The host refuses to continue without confirmation.
+- **Unreadable fingerprint unit:** on resume, make one fingerprint unit fail to read (media error, and separately no response). The host reports the source as unverified and requires operator confirmation; it does not continue on its own.
 - **Unknown outcome:** the client is busy past the host's retry limit (a mock BIOS call that blocks). The units stay missing, not failed, and are captured after reconnecting.
 
 ## Fault injection and automation
