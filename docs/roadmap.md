@@ -6,7 +6,7 @@
 
 - Integrate this design set with the user's existing Rust project template.
 - Add MIT root license with correct copyright attribution.
-- Review and ratify protocol fundamentals before client implementation.
+- Review and ratify protocol fundamentals before client implementation. **Done:** [protocol v1](protocol-v1.md) ratified on 2026-10-21.
 - Keep `client/dos` as the DOS path; no speculative empty platform trees.
 
 ## Milestone 1 — Standalone host XMODEM sender

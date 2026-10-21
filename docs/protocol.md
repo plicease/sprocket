@@ -1,6 +1,6 @@
 # Native wire protocol
 
-**Status:** Design proposal; **not yet a ratified wire specification**. Do not implement against the illustrative layout until fields and state transitions are frozen.
+**Status:** Requirements for the native protocol. The wire specification that meets them is [protocol v1](protocol-v1.md), **ratified on 2026-10-21**; implement against that document. Where this document describes a design choice in general terms, protocol v1 is authoritative.
 
 ## Requirements
 
@@ -22,24 +22,11 @@
 
 The standard-protocol senders (XMODEM, XMODEM-1K, ZMODEM) and the interactive terminal file server (`sprocket serve`) are **separate host facilities**, not part of this protocol. They talk to ordinary terminal programs and share only the host's transport layer with the native engine. Nothing in their menus or ZMODEM framing is a native message type, and they impose no requirements on native framing.
 
-## Illustrative frame (proposal, not normative)
+## Wire format
 
-```text
-frame delimiter | escaped frame body | frame delimiter
+The frame layout, CRC, sequencing, messages and test vectors are defined by the ratified [protocol v1](protocol-v1.md). An earlier illustrative layout in this document (with version, flags and length fields) was superseded by it and has been removed.
 
-frame body:
-  protocol_version  u8
-  message_type      u8
-  flags             u8
-  sequence          u16 LE
-  payload_length    u16 LE
-  payload           [payload_length]
-  frame_crc         u16 LE
-```
-
-**Unresolved:** delimiter/escaping scheme (e.g. HDLC-style or COBS), CRC polynomial and coverage, maximum frame size, and whether a u16 sequence counter is worthwhile for tiny clients. No field offsets or constants are final. An 8-bit CPU must be able to parse incrementally without holding a large frame in RAM.
-
-## Proposed session flow
+## Session flow
 
 ```text
 host                    client
@@ -53,9 +40,9 @@ host                    client
 
 Either side must be able to time out, abort safely, and restart without confusing stale responses with new transactions. Client identity/platform information is descriptive, not a substitute for capabilities.
 
-## Capability model (proposal)
+## Capability model
 
-Independent advertised capabilities, for example:
+Independent advertised capabilities (v1 defines them as a bitmap in `HELLO_REPLY`), for example:
 
 - File receive / file send / safe replacement support.
 - Enumerate logical or physical storage devices.
@@ -79,9 +66,9 @@ Define distinct error classes for unsupported operation, invalid request, serial
 
 Initial use is a directly attached, operator-controlled serial cable. No authentication or encryption is promised. The host must not silently execute received data or perform destructive operations. File writes must use explicit destination selection and safe replacement semantics.
 
-## Before implementation: decisions to ratify
+## Decisions ratified in v1
 
-A concrete proposal for all seven is in [protocol v1 proposal](protocol-v1.md), pending review.
+All seven are decided in [protocol v1](protocol-v1.md), ratified on 2026-10-21 after review in PR #1.
 
 1. Framing and byte escaping, CRC parameters, maximum packet size.
 2. Sequence/ACK/retry behavior, timeout and reconnect semantics.
