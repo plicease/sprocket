@@ -174,6 +174,7 @@ fn send(args: SendArgs) -> anyhow::Result<()> {
             let why = match reason {
                 RetryReason::Nak => "NAK",
                 RetryReason::Timeout => "timeout",
+                RetryReason::StartRequest => "receiver repeated its start request",
             };
             eprintln!("retrying {what} ({why})");
         }

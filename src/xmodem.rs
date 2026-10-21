@@ -33,6 +33,10 @@ const LARGE_BLOCK: usize = 1024;
 /// How long the line must be quiet before stale bytes are considered drained.
 const DRAIN_QUIET: Duration = Duration::from_millis(50);
 
+/// After a repeated start byte during block 1, how long to wait for an ACK
+/// before resending (capped at the ACK timeout).
+const START_GRACE: Duration = Duration::from_secs(1);
+
 /// Number of CAN bytes sent when the sender aborts.
 const CANCEL_COUNT: usize = 8;
 
@@ -91,6 +95,9 @@ impl Options {
 pub enum RetryReason {
     Nak,
     Timeout,
+    /// The receiver repeated its start byte (`C` or NAK) instead of
+    /// acknowledging block 1.
+    StartRequest,
 }
 
 /// Progress notifications from [`send`].
@@ -215,7 +222,13 @@ fn send_inner(
         let chunk = &data[offset..data.len().min(offset + size)];
         block += 1;
         let packet = build_packet(block as u8, chunk, size, checksum);
-        send_with_retries(transport, &packet, block, options, progress)?;
+        // Until block 1 is acknowledged, the receiver may still be repeating
+        // the byte it started with.
+        let start = (block == 1).then_some(match checksum {
+            Checksum::Crc16 => CRC_REQUEST,
+            Checksum::Arithmetic => NAK,
+        });
+        send_with_retries(transport, &packet, block, start, options, progress)?;
         offset += chunk.len();
         padding += (size - chunk.len()) as u64;
         progress(&Event::BlockAcked {
@@ -277,14 +290,26 @@ fn send_with_retries(
     transport: &mut dyn Transport,
     packet: &[u8],
     block: u32,
+    start: Option<u8>,
     options: &Options,
     progress: &mut dyn FnMut(&Event),
 ) -> Result<(), Error> {
     for attempt in 0..=options.max_retries {
         transport.write_all(packet)?;
-        // A receiver that missed block 1 entirely may repeat its `C`.
-        let reason = match wait_response(transport, options.ack_timeout, block == 1)? {
+        let reason = match wait_response(transport, options.ack_timeout, start)? {
             Response::Ack => return Ok(()),
+            Response::StartRequest => {
+                // The start byte may have crossed block 1 on the wire, in
+                // which case an ACK follows. Resending at once would deliver
+                // block 1 twice and leave a second ACK that could be taken
+                // for block 2's.
+                let grace = START_GRACE.min(options.ack_timeout);
+                if let Response::Ack = wait_response(transport, grace, start)? {
+                    return Ok(());
+                }
+                transport.drain(DRAIN_QUIET)?;
+                RetryReason::StartRequest
+            }
             Response::Nak => {
                 // Discard duplicate NAKs so they are not read as the
                 // response to the retransmission.
@@ -308,9 +333,9 @@ fn send_eot(
     for attempt in 0..=options.max_retries {
         transport.write_all(&[EOT])?;
         // Some receivers deliberately NAK the first EOT.
-        let reason = match wait_response(transport, options.ack_timeout, false)? {
+        let reason = match wait_response(transport, options.ack_timeout, None)? {
             Response::Ack => return Ok(()),
-            Response::Nak => RetryReason::Nak,
+            Response::Nak | Response::StartRequest => RetryReason::Nak,
             Response::Timeout => RetryReason::Timeout,
         };
         if attempt < options.max_retries {
@@ -324,12 +349,14 @@ enum Response {
     Ack,
     Nak,
     Timeout,
+    /// The receiver's start byte, while it may still be repeating it.
+    StartRequest,
 }
 
 fn wait_response(
     transport: &mut dyn Transport,
     timeout: Duration,
-    crc_request_is_nak: bool,
+    start: Option<u8>,
 ) -> Result<Response, Error> {
     let deadline = Instant::now() + timeout;
     let mut last_was_can = false;
@@ -341,8 +368,8 @@ fn wait_response(
         match transport.read_byte(remaining)? {
             None => return Ok(Response::Timeout),
             Some(ACK) => return Ok(Response::Ack),
+            Some(byte) if Some(byte) == start => return Ok(Response::StartRequest),
             Some(NAK) => return Ok(Response::Nak),
-            Some(CRC_REQUEST) if crc_request_is_nak => return Ok(Response::Nak),
             Some(CAN) if last_was_can => return Err(Error::Cancelled),
             // Anything else is line noise or a stale byte; keep waiting.
             Some(byte) => last_was_can = byte == CAN,
@@ -383,6 +410,12 @@ pub(crate) mod tests {
         cancel_after: Option<u32>,
         /// NAK the first EOT.
         nak_first_eot: bool,
+        /// Send the start byte again just before ACKing block 1, as if it
+        /// crossed block 1 on the wire.
+        crossed_start: bool,
+        /// Ignore the first copy of block 1 and repeat the start byte, as a
+        /// receiver that was not ready yet.
+        ignore_first_block: bool,
     }
 
     #[derive(Debug, Default)]
@@ -391,6 +424,7 @@ pub(crate) mod tests {
         small_blocks: u32,
         large_blocks: u32,
         naks: u32,
+        duplicates: u32,
     }
 
     /// Minimal XMODEM receiver used to exercise the sender.
@@ -401,6 +435,7 @@ pub(crate) mod tests {
         let mut good: u32 = 0;
         let mut dropped = false;
         let mut eot_naked = false;
+        let mut ignored = false;
         t.write_all(&[start]).unwrap();
         loop {
             let header = t.read_byte(RECEIVER_WAIT).unwrap().expect("sender stalled");
@@ -434,8 +469,14 @@ pub(crate) mod tests {
                         t.write_all(&[NAK]).unwrap();
                         continue;
                     }
+                    if faults.ignore_first_block && !ignored {
+                        ignored = true;
+                        t.write_all(&[start]).unwrap();
+                        continue;
+                    }
                     if good > 0 && seq == expected.wrapping_sub(1) {
                         // Duplicate after a lost ACK: acknowledge, discard.
+                        out.duplicates += 1;
                         t.write_all(&[ACK]).unwrap();
                         continue;
                     }
@@ -451,6 +492,9 @@ pub(crate) mod tests {
                     if faults.cancel_after == Some(good) {
                         t.write_all(&[CAN, CAN]).unwrap();
                         return out;
+                    }
+                    if faults.crossed_start && good == 1 {
+                        t.write_all(&[start]).unwrap();
                     }
                     if faults.drop_ack == Some(good) && !dropped {
                         dropped = true;
@@ -680,6 +724,45 @@ pub(crate) mod tests {
         }));
         assert_eq!(rx.data.len(), 512);
         assert_padded(&rx.data, &data);
+    }
+
+    #[test]
+    fn crossed_start_byte_does_not_resend_block_1() {
+        for start in [CRC_REQUEST, NAK] {
+            let (mut s, r) = memory_pair();
+            let data = sample(400);
+            let faults = Faults {
+                crossed_start: true,
+                ..Faults::default()
+            };
+            let (result, events, rx) = run(&mut s, r, start, faults, &data, &fast(Variant::Xmodem));
+            result.unwrap();
+            assert!(
+                !events.iter().any(|e| matches!(e, Event::Retry { .. })),
+                "{events:?}"
+            );
+            assert_eq!(rx.duplicates, 0);
+            assert_padded(&rx.data, &data);
+        }
+    }
+
+    #[test]
+    fn repeated_start_byte_resends_block_1() {
+        for start in [CRC_REQUEST, NAK] {
+            let (mut s, r) = memory_pair();
+            let data = sample(400);
+            let faults = Faults {
+                ignore_first_block: true,
+                ..Faults::default()
+            };
+            let (result, events, rx) = run(&mut s, r, start, faults, &data, &fast(Variant::Xmodem));
+            result.unwrap();
+            assert!(events.contains(&Event::Retry {
+                block: 1,
+                reason: RetryReason::StartRequest
+            }));
+            assert_padded(&rx.data, &data);
+        }
     }
 
     #[test]
