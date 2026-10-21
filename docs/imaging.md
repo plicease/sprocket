@@ -40,7 +40,46 @@ For nonuniform media, choose a format appropriate to the source rather than forc
 
 ## Failure behavior
 
-Read each requested range; on media error, retry only within a bounded policy, report exact failed addresses, and continue only when the operator's selected policy allows it. Host should mark images with missing data as **incomplete**, not successful. CRC/retry at the serial layer cannot repair a source disk read failure. If a transfer is interrupted, preserve a resumable partial image only with validated metadata and clear status.
+Read each requested range; on media error, retry only within a bounded policy, report exact failed addresses, and continue only when the operator's selected policy allows it. Host should mark images with missing data as **incomplete**, not successful. CRC/retry at the serial layer cannot repair a source disk read failure. If a transfer is interrupted, the partial image and its progress map are kept so that imaging can resume (below).
+
+## Resumable imaging
+
+A hard disk at serial speeds takes hours: about 80 MB at 38400 baud is roughly six hours of payload alone, and at 9600 nearly a day. An interruption (a power cut, a dropped cable, a crashed host or client) must not mean starting again. Resume is a **host feature**: `STORAGE_READ` is idempotent and addresses units directly, so no protocol change is needed. It is separate from resuming a file upload, which stays deferred.
+
+### Persistent state
+
+Next to the image file, the host keeps a **progress map** recording, per unit or per range:
+
+- **captured**: the bytes are in the image and durable;
+- **missing**: not yet read, or the outcome is unknown (for example, the host gave up waiting for a response);
+- **failed**: the client reported a read error, with its platform code (e.g. the BIOS status);
+- the number of read attempts and the `retries` value used.
+
+It also records the source identity (below), the unit size and count, and the host and client versions. The image file's length never implies completeness: an image can be full length with failed or missing units, and a sparse or preallocated file says nothing about which units were written.
+
+### Crash safety
+
+- A unit is marked **captured only after its bytes are durable**: the host writes the data, syncs the image file (`fsync`), and only then records the units in the map.
+- The map is updated by writing a new copy and renaming it over the old one (or by appending checksummed records to a journal), so that a crash leaves either the old map or the new one.
+- On load, a map that is torn, fails its checksum, or does not match the image is treated conservatively: every unit it cannot vouch for is **missing**, and is read again. Over-reading is cheap; trusting a bad map is not.
+- Syncing after every response would be slow; the host may batch, as long as no unit is marked captured before a sync that covers it.
+
+### Restarting
+
+1. Reload the map and image, and start a new session.
+2. Re-enumerate with `STORAGE_LIST` and **validate that the source is the same disk**: unit size and count, geometry, and capacity must match. A BIOS drive number and geometry alone do not identify a disk, so the host also compares a fingerprint taken at the start, such as the hashes of a few fixed units (unit 0 and a handful spread across the disk), read again on resume. If anything differs or cannot be checked, the host stops and asks the operator to confirm before continuing.
+3. Request only **missing** ranges. Requests need not be in order, and a failed unit never stops the pass: it is recorded and the host moves on.
+4. Afterwards, the operator may run **recovery passes** over failed and suspect units with a different retry policy (see marginal media).
+
+The image is reported as **complete** only when every unit is captured, and as **incomplete** otherwise, with the counts of missing and failed units.
+
+## Marginal media
+
+A unit that read successfully may still be wrong or unstable on a failing disk. The host's imaging policy, not the protocol, decides how to treat it:
+
+- A unit that failed, or was reported as suspect (good data with a platform status such as BIOS `11h`, ECC-corrected), can be read again in a later pass. Each new `STORAGE_READ` rereads the medium ([protocol v1](protocol-v1.md#rereads)).
+- Rereads that return **different** successful data are all kept, in a sidecar with each read's hash, the time, the attempt number, the `retries` value, and the client's status. The image holds one chosen version (the first, or the majority once there are three or more), and the map marks the unit as **conflicting** so that nothing claims it is certain.
+- The final manifest lists failed, suspect and conflicting units separately.
 
 ## Verification
 

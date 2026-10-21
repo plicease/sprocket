@@ -62,8 +62,10 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 - Enumerate DOS-visible BIOS disks, read supported ranges, and stream them to host.
 - Write images and machine-readable error maps/metadata.
 - Detect and report source-media read failures separately from link failures.
+- Resumable imaging: a persistent, crash-safe progress map (captured, missing and failed units, with platform codes and read attempts); on restart, revalidate the source disk and read only missing ranges, in any order, continuing past bad sectors. See [imaging](imaging.md#resumable-imaging). No change to `STORAGE_READ`; resuming file uploads stays deferred.
+- Recovery passes over failed and suspect units, keeping conflicting successful reads ([marginal media](imaging.md#marginal-media)).
 
-**Acceptance:** image a known floppy and a hard disk (subject to BIOS capabilities) with documented completeness and integrity checks.
+**Acceptance:** image a known floppy and a hard disk (subject to BIOS capabilities) with documented completeness and integrity checks. Imaging a hard disk survives interruption: stopping and restarting the host, and separately the client, partway through produces an image byte-for-byte identical to an uninterrupted capture, without rereading units already captured. A PS/2 Model 70 disk of about 80 MB, which takes hours at 38400 baud, is the motivating case.
 
 ## Milestone 5 — Broader hardware and protocols
 
@@ -83,7 +85,7 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 - **Milestones 1A/1B:** scripted menu sessions over in-memory and PTY links, including lrzsz `rz`/`rx` interoperability. Then a DOS terminal program under DOSBox-X connected to `sprocket serve` over TCP, checking ZMODEM auto-download, manual XMODEM, cancellation, and exact file contents. Repeat on real hardware.
 - **Milestone 2:** run DOS client under DOSBox-X with a virtual null-modem/TCP link to the Rust host; test protocol handshake, timeout, corruption and retry. Repeat critical paths under 86Box with an 8088-class machine.
 - **Milestone 3:** automated transfer and executable deployment tests in emulator, including interrupted transfers and recovery; validate on `smokey`.
-- **Milestone 4:** boot from a **real emulated BIOS disk image**, image it through the virtual serial link, and compare the result with known fixture bytes. Confirm BIOS drive numbering, geometry, and read failure reporting. Repeat representative tests in 86Box and on real media.
+- **Milestone 4:** boot from a **real emulated BIOS disk image**, image it through the virtual serial link, and compare the result with known fixture bytes. Confirm BIOS drive numbering, geometry, and read failure reporting. Interrupt and resume captures as described in [testing](testing.md#resumable-imaging). Repeat representative tests in 86Box and on real media.
 - **CI:** prioritize Rust unit tests and deterministic host/virtual-client integration tests first; add headless emulator smoke tests only after startup, ROM provisioning, and serial connectivity are reproducible.
 
 Detailed matrix and setup guidance: [testing](testing.md).

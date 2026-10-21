@@ -57,9 +57,20 @@ For DOSBox-X, use its null-modem serial configuration, with the Rust host connec
 
 A transport checksum validates bytes **in transit**, not the readability of the original disk. Preserve these error categories separately.
 
+## Resumable imaging
+
+Resume ([imaging](imaging.md#resumable-imaging)) is tested first against a Rust mock client with a fault-injecting disk backend, then with the DOS client under emulation. Each case compares the final image byte-for-byte with an uninterrupted capture of the same fixture, and checks the progress map.
+
+- **Host interrupted:** kill the host at random points (between requests, mid-response, during an image write) and restart it. The capture finishes, no captured unit is requested again, and every unit is requested at least once.
+- **Client interrupted:** stop the client or drop the link mid-capture and restart it. The host recovers with a new session and continues from the map.
+- **Interrupted while persisting progress:** kill the host between writing image data and syncing it, and while the map is being replaced. A torn or mismatched map makes the host reread the units it cannot vouch for; nothing is marked captured that is not in the image.
+- **Failed sectors:** units that fail are recorded with their platform codes and skipped; the pass continues; a later recovery pass rereads only those units. Units that return different data on reread are kept as conflicting reads.
+- **Different source disk:** resume against a fixture with different contents, and one with different geometry or capacity. The host refuses to continue without confirmation.
+- **Unknown outcome:** the client is busy past the host's retry limit (a mock BIOS call that blocks). The units stay missing, not failed, and are captured after reconnecting.
+
 ## Fault injection and automation
 
-Test at minimum: truncated frames, flipped bytes, duplicate frames, lost acknowledgments, delayed responses, stalled peers, disconnect/reconnect, unexpected commands, and interrupted file deployment. Test recovery and bounds on retries/memory use.
+Test at minimum: truncated frames, flipped bytes, duplicate frames (both while the request is still executing and after it completed), a reused `seq` with a different payload, lost acknowledgments, delayed responses, stalled peers, disconnect/reconnect, unexpected commands, and interrupted file deployment, including an interruption at each step of `FILE_COMMIT` with the recovery in [protocol v1](protocol-v1.md#what-an-interrupted-commit-leaves-behind). Test recovery and bounds on retries/memory use.
 
 Initially automate Rust unit tests and protocol tests using a Rust mock client. Add DOSBox-X end-to-end smoke tests when emulator startup and serial redirection can run unattended in CI. 86Box CI may be a later, optional job because machine/ROM configuration and headless automation are more involved. Never treat emulator passes as a substitute for real-hardware acceptance.
 
