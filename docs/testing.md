@@ -98,7 +98,7 @@ For the menu, a script on `/tmp/ptyB` presses ENTER, selects a file, starts `rz`
 - Integrity: compare received files with the host originals byte-for-byte (ZMODEM) or after truncation to the reported length (XMODEM).
 - Path traversal: the menu offers no way to name paths, and listings omit escaping symlinks. The `files` unit tests cover direct traversal attempts.
 
-**Tier 2/3.** Repeat auto-download and fallback on 86Box and on `smokey`/NuXT with real UARTs, at 9600 baud first, then higher rates. Windows 95 HyperTerminal on `smokey` has been verified to auto-download ZMODEM from `sprocket serve` at 38400 baud, with matching MD5 sums (2026-10-20). Its XMODEM fallback and cancellation through the menu remain to be checked, and DOS-mode terminals still need testing.
+**Tier 2/3.** Repeat auto-download and fallback on 86Box and on `smokey`/NuXT with real UARTs, at 9600 baud first, then higher rates. Windows 95 HyperTerminal on `smokey` has been verified to auto-download ZMODEM from `sprocket serve` at 38400 baud, with matching MD5 sums (2026-10-20). Its manual XMODEM and XMODEM-1K receives through the menu were also verified (MD5 match after truncation), with the menu returning after each. Cancellation from the terminal mid-transfer remains to be checked, and DOS-mode terminals still need testing.
 
 ## Open questions
 
