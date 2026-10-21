@@ -24,7 +24,7 @@ SPROCKET offers three complementary modes. None replaces another; each needs les
 | Smart terminal | `sprocket serve` | Any terminal program; ZMODEM optional | ZMODEM: yes. XMODEM: no |
 | Native SPROCKET | *planned* | The SPROCKET client (`SPROCKET.EXE`) | Yes, plus disk imaging |
 
-All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used.
+All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. Both `send` and `serve` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
 
 ### Bootstrap send
 

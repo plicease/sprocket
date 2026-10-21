@@ -4,6 +4,7 @@
 
 pub mod files;
 pub mod serve;
+pub mod trace;
 pub mod transport;
 pub mod xmodem;
 pub mod zmodem;

@@ -8,6 +8,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use sprocket::files::Root;
+use sprocket::trace::Trace;
 use sprocket::xmodem::{self, Event, RetryReason};
 use sprocket::{serve, transport, zmodem};
 
@@ -46,6 +47,10 @@ struct SendArgs {
 
     /// File to send
     file: PathBuf,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -69,6 +74,10 @@ struct ServeArgs {
     /// Seconds a transfer waits for the receiver to start
     #[arg(long, default_value_t = 60)]
     wait: u64,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -86,30 +95,63 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+fn open_trace(path: Option<&PathBuf>, command: &str) -> anyhow::Result<Option<Trace>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let trace =
+        Trace::create(path).with_context(|| format!("cannot open trace {}", path.display()))?;
+    trace.note(&format!("sprocket {} {command}", env!("CARGO_PKG_VERSION")));
+    Ok(Some(trace))
+}
+
+/// Open the link, recording its traffic when tracing.
+fn open_link(
+    port: &str,
+    baud: u32,
+    trace: Option<&Trace>,
+) -> io::Result<Box<dyn transport::Transport>> {
+    let link = transport::open(port, baud)?;
+    Ok(match trace {
+        Some(trace) => {
+            trace.note(&format!("opened {port} at {baud} 8N1"));
+            trace.wrap(link)
+        }
+        None => link,
+    })
+}
+
 fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let root =
         Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
+    let trace = open_trace(args.trace.as_ref(), "serve")?;
+    // Host log messages go to stderr and, when tracing, into the trace.
+    let mut log = |msg: &str| {
+        eprintln!("{msg}");
+        if let Some(trace) = &trace {
+            trace.note(msg);
+        }
+    };
     let options = serve::Options {
         idle_timeout: Duration::from_secs(args.idle),
         start_timeout: Duration::from_secs(args.wait),
     };
-    eprintln!(
+    log(&format!(
         "serving {} on {} ({} 8N1, no flow control); press Ctrl-C to stop",
         root.path().display(),
         args.port,
         args.baud
-    );
+    ));
     // Keep serving across emulator restarts and dropped TCP links.
     loop {
-        match transport::open(&args.port, args.baud) {
+        match open_link(&args.port, args.baud, trace.as_ref()) {
             Ok(mut link) => {
-                eprintln!("connected to {}", args.port);
-                let mut log = |msg: &str| eprintln!("{msg}");
+                log(&format!("connected to {}", args.port));
                 if let Err(e) = serve::run(link.as_mut(), &root, &options, &mut log) {
-                    eprintln!("connection lost: {e}");
+                    log(&format!("connection lost: {e}"));
                 }
             }
-            Err(e) => eprintln!("cannot open {}: {e}", args.port),
+            Err(e) => log(&format!("cannot open {}: {e}", args.port)),
         }
         std::thread::sleep(Duration::from_secs(5));
     }
@@ -118,13 +160,32 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
 fn send(args: SendArgs) -> anyhow::Result<()> {
     let data =
         fs::read(&args.file).with_context(|| format!("cannot read {}", args.file.display()))?;
-    let mut link = transport::open(&args.port, args.baud)
+    let trace = open_trace(
+        args.trace.as_ref(),
+        &format!("send {}", args.file.display()),
+    )?;
+    let mut link = open_link(&args.port, args.baud, trace.as_ref())
         .with_context(|| format!("cannot open {}", args.port))?;
 
-    if args.protocol == Protocol::Zmodem {
-        return send_zmodem(&args, link.as_mut(), &data);
+    let result = if args.protocol == Protocol::Zmodem {
+        send_zmodem(&args, link.as_mut(), &data)
+    } else {
+        send_xmodem(&args, link.as_mut(), &data)
+    };
+    if let Some(trace) = &trace {
+        match &result {
+            Ok(()) => trace.note("transfer complete"),
+            Err(e) => trace.note(&format!("{e:#}")),
+        }
     }
+    result
+}
 
+fn send_xmodem(
+    args: &SendArgs,
+    link: &mut dyn transport::Transport,
+    data: &[u8],
+) -> anyhow::Result<()> {
     let variant = match args.protocol {
         Protocol::Xmodem1k => xmodem::Variant::Xmodem1k,
         _ => xmodem::Variant::Xmodem,
@@ -144,7 +205,7 @@ fn send(args: SendArgs) -> anyhow::Result<()> {
 
     let tty = io::stderr().is_terminal();
     let mut mid_line = false;
-    let summary = xmodem::send(link.as_mut(), &data, &options, |event| match *event {
+    let summary = xmodem::send(link, data, &options, |event| match *event {
         Event::Started {
             checksum,
             block_size,
