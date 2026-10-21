@@ -8,6 +8,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use sprocket::files::Root;
+use sprocket::native::{self, session};
 use sprocket::trace::Trace;
 use sprocket::xmodem::{self, Event, RetryReason};
 use sprocket::{serve, transport, zmodem};
@@ -25,6 +26,8 @@ enum Command {
     Send(SendArgs),
     /// Serve a read-only file menu to a terminal program on the serial line
     Serve(ServeArgs),
+    /// Connect to a SPROCKET client, show what it supports, and ping it
+    Hello(HelloArgs),
 }
 
 #[derive(Args)]
@@ -80,6 +83,29 @@ struct ServeArgs {
     trace: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct HelloArgs {
+    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
+    #[arg(long)]
+    port: String,
+
+    /// Baud rate (serial devices only); the line is always 8N1, no flow control
+    #[arg(long, default_value_t = 9600)]
+    baud: u32,
+
+    /// Seconds to keep calling the client before giving up
+    #[arg(long, default_value_t = 60)]
+    wait: u64,
+
+    /// Number of full-size pings to send
+    #[arg(long, default_value_t = 3)]
+    pings: u32,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Protocol {
     Zmodem,
@@ -92,6 +118,7 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Send(args) => send(args),
         Command::Serve(args) => serve(args),
+        Command::Hello(args) => hello(args),
     }
 }
 
@@ -155,6 +182,94 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         std::thread::sleep(Duration::from_secs(5));
     }
+}
+
+fn hello(args: HelloArgs) -> anyhow::Result<()> {
+    let trace = open_trace(args.trace.as_ref(), "hello")?;
+    let mut link = open_link(&args.port, args.baud, trace.as_ref())
+        .with_context(|| format!("cannot open {}", args.port))?;
+    let log = |msg: &str| {
+        eprintln!("{msg}");
+        if let Some(trace) = &trace {
+            trace.note(msg);
+        }
+    };
+    let options = session::Options {
+        baud: args.baud,
+        wait: Duration::from_secs(args.wait),
+        ..session::Options::default()
+    };
+    eprintln!(
+        "calling the client on {}; waiting up to {}s",
+        args.port, args.wait
+    );
+    let result = hello_session(&args, link.as_mut(), &options, &log);
+    if let Err(e) = &result
+        && let Some(trace) = &trace
+    {
+        trace.note(&format!("{e:#}"));
+    }
+    result
+}
+
+fn hello_session(
+    args: &HelloArgs,
+    link: &mut dyn transport::Transport,
+    options: &session::Options,
+    log: &dyn Fn(&str),
+) -> anyhow::Result<()> {
+    let observer = |event: &native::link::Event| {
+        use native::link::Event;
+        match event {
+            // Seq 0 is the HELLO, repeated until the client answers.
+            Event::Retransmit { seq: 0, .. } | Event::Pending { .. } => {}
+            Event::Retransmit { seq, attempt } => {
+                log(&format!("retransmitting request {seq} (attempt {attempt})"))
+            }
+            Event::Ignored(frame) => log(&format!(
+                "ignored frame type {:#04x} session {:#06x} seq {}",
+                frame.kind, frame.session, frame.seq
+            )),
+            Event::Discarded(reason) => log(&format!("dropped a frame: {reason}")),
+        }
+    };
+    let mut session =
+        session::Session::connect(link, options, observer).context("cannot start a session")?;
+    let client = session.client().clone();
+    println!(
+        "session {:04x}: client {} on {}, protocol {}.{}",
+        session.session_id(),
+        if client.version.is_empty() {
+            "(no version)"
+        } else {
+            &client.version
+        },
+        client.platform,
+        client.major,
+        client.minor,
+    );
+    println!(
+        "max payload: client {} bytes, negotiated {} bytes",
+        client.max_payload,
+        session.max_payload()
+    );
+    println!("capabilities: {}", client.capabilities);
+
+    // Every byte value, so escaping is exercised in both directions.
+    let data: Vec<u8> = (0..session.max_payload()).map(|i| i as u8).collect();
+    for n in 1..=args.pings {
+        let rtt = session
+            .ping(&data)
+            .with_context(|| format!("ping {n} failed"))?;
+        println!(
+            "ping {n}: {} bytes each way in {:.3}s",
+            data.len(),
+            rtt.as_secs_f64()
+        );
+    }
+    session.close().context("CLOSE failed")?;
+    println!("session closed");
+    Ok(())
 }
 
 fn send(args: SendArgs) -> anyhow::Result<()> {

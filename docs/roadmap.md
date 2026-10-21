@@ -49,6 +49,8 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 
 **Acceptance:** robust two-way native packet exchange with retries and version/capability reporting.
 
+**Status:** host side implemented (2026-10-21): v1 framing with the `tests/vectors/` fixtures, the stop-and-wait link layer, the session layer (`HELLO`, `PING`, `CLOSE`), and `sprocket hello`, tested against a mock client. The DOS client is not started.
+
 ## Milestone 3 — Native file transfer and recovery
 
 - Exact-length file transfers and end-to-end verification.

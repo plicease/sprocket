@@ -23,9 +23,9 @@ SPROCKET offers three complementary modes. None replaces another; each needs les
 | --- | --- | --- | --- |
 | Bootstrap send | `sprocket send` | Any terminal program with an XMODEM (or ZMODEM) receiver | XMODEM: no (padded). ZMODEM: yes |
 | Smart terminal | `sprocket serve` | Any terminal program; ZMODEM optional | ZMODEM: yes. XMODEM: no |
-| Native SPROCKET | *planned* | The SPROCKET client (`SPROCKET.EXE`) | Yes, plus disk imaging |
+| Native SPROCKET | `sprocket hello` (more planned) | The SPROCKET client (`SPROCKET.EXE`) | Yes, plus disk imaging |
 
-All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. Both `send` and `serve` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
+All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. `send`, `serve` and `hello` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
 
 ### Bootstrap send
 
@@ -58,7 +58,13 @@ Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware), but 
 
 ### Native SPROCKET
 
-The native protocol and DOS client are designed but not yet implemented; see [protocol](docs/protocol.md) and the [roadmap](docs/roadmap.md).
+The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-21. The host side of the Milestone 2 handshake is implemented; the DOS client, file transfer and disk imaging are not yet. See the [roadmap](docs/roadmap.md).
+
+```sh
+sprocket hello --port /dev/ttyS0 --baud 9600
+```
+
+`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. Until a SPROCKET client exists it is tested only against a mock client (`cargo test`) and a scripted client over TCP.
 
 ### Validation status
 

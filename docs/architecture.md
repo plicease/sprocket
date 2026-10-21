@@ -26,8 +26,10 @@ Rust host CLI
   ├── terminal file server (`sprocket serve`)
   │     ├── plain-ASCII menu and line editing
   │     └── root-confined, read-only file tree
-  ├── native SPROCKET protocol engine
-  │     ├── session negotiation and capabilities
+  ├── native SPROCKET protocol engine (`native`)
+  │     ├── framing and CRC-16 (`native::frame`)
+  │     ├── stop-and-wait requests and retransmission (`native::link`)
+  │     ├── session negotiation and capabilities (`native::session`, `sprocket hello`)
   │     ├── file transfer and client deployment
   │     └── storage discovery and imaging
   └── local image writer, verification and metadata
