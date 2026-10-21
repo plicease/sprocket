@@ -80,6 +80,26 @@ Initially automate Rust unit tests and protocol tests using a Rust mock client. 
 - `make test` in `client/dos` runs the DOS client's C core, built for the host, against the same `tests/vectors/` fixtures as the Rust host, plus its session and duplicate rules.
 - `client/dos/test/dosbox-hello.sh [baud]` runs `SPROCKET.EXE` under DOSBox-X (8086, COM1 as a transparent TCP null-modem on port 5100) against `sprocket hello`. It passed at 9600, 38400 and 115200 baud on 2026-10-21, with no dropped frames or UART errors. DOSBox-X does not model UART overruns faithfully, so this does not show that the polling loop keeps up on an 8088; 86Box and real hardware must.
 
+### 86Box: IBM XT, 8088 at 4.77 MHz
+
+Run on 2026-10-21 with 86Box build 9001: machine `ibmxt86` (IBM XT, 1986 BIOS), 8088 at 4.77 MHz, 640 KB, CGA, a 3.5" 720K drive, and COM1 an 8250 without a FIFO. The boot disk is FreeDOS 1.3's 720K `x86BOOT.img` (FreeDOS kernel 2043 and FreeCOM run on the 8088), with `FDCONFIG.SYS` and `FDAUTO.BAT` replaced with mtools so that it boots straight to `BENCH` and `SPROCKET COM1 9600`.
+
+**Timing.** `BENCH.EXE` repeats the client's per-byte receive work over 1 KB frames:
+
+| Build | µs per byte | Margin at 9600 | at 19200 | at 38400 |
+| --- | --- | --- | --- | --- |
+| `-os`, stack checks, tick read per byte (first version) | 586 | 1.7× | too slow | too slow |
+| `-ox -s`, no tick read per byte (current) | 332 | 3.1× | 1.5× | too slow (0.7×) |
+
+**End to end.** `sprocket hello` completed the handshake, five 1024-byte pings and `CLOSE` against the 8088. Some frames were lost to receive overruns and were recovered by retransmission. These overruns are from the emulator's serial console, not the client: the console device feeds the UART in bursts whenever it reads the PTY, which overruns an 8250 whatever the CPU. Pacing the host's bytes with `client/dos/test/pace-relay.py` reduced but did not remove them: about 1% of bytes at 9600 pacing (no ping got through), and about 0.04% at 4800 and at 2400. A client too slow for the line would have lost far more, and the benchmark shows a 3× margin at 9600. 86Box's "Serial Passthrough" device, which has a baud-rate setting, did not attach to a PTY in this build. Real hardware remains the test of 9600 back to back.
+
+**Setup notes.**
+
+- 86Box must run on a private X display (`Xvfb :77`, then `DISPLAY=:77 QT_QPA_PLATFORM=xcb` with `WAYLAND_DISPLAY` unset), or it opens on the desktop.
+- Serial: `serial1_device = stdio` with `[Virtual Console (COM) #1]` `mode = 1` creates a PTY. 86Box pauses on a dialog naming it until Return is pressed (`xdotool key Return`). The PTY number is the `tty-index` in `/proc/<86Box pid>/fdinfo/<fd>` for its `/dev/ptmx` descriptor.
+- 86Box ignores SIGTERM here; stop it with SIGKILL.
+- Results printed by the guest can be read back from the floppy image with `mtype` after 86Box stops.
+
 ## First end-to-end emulator milestone
 
 **Acceptance:** DOSBox-X boots a DOS environment, runs the Open Watcom-built `SPROCKET.EXE`, exchanges a version/capability handshake with the Rust host over the emulated COM1 link, and completes a small verified file transfer. Follow with a repeat under 86Box configured as an 8088-class PC.

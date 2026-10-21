@@ -21,7 +21,11 @@
 #define VERSION "0.1.0"
 #define MAX_PAYLOAD 1024
 
-/* Check the keyboard and timers once per this many idle polls. */
+/*
+ * Check the keyboard and timers once per this many idle polls. Nothing
+ * slower than a UART poll and the decoder runs per received byte: on a
+ * 4.77 MHz 8088 that is about 330 us, against 1041 us per byte at 9600.
+ */
 #define IDLE_CHECK 256
 
 static uint8_t rx_buf[MAX_PAYLOAD + FRAME_HEADER_LEN + FRAME_CRC_LEN];
@@ -41,6 +45,8 @@ int main(int argc, char **argv)
     uint16_t idle = 0;
     uint16_t inter_byte;
     uint32_t last_byte = 0;
+    uint32_t now;
+    uint8_t received = 0;
     uint32_t frames = 0;
     uint32_t dropped = 0;
     uint8_t byte;
@@ -71,7 +77,7 @@ int main(int argc, char **argv)
     for (;;) {
         if (port_get(&byte)) {
             idle = 0;
-            last_byte = port_ticks();
+            received = 1;
             result = decoder_push(&dec, byte);
             if (result == FRAME_OK) {
                 frames++;
@@ -95,8 +101,12 @@ int main(int argc, char **argv)
             continue;
         }
         idle = 0;
-        if (decoder_in_frame(&dec)
-            && port_ticks() - last_byte > inter_byte) {
+        /* The time of the last byte, to within one idle check. */
+        now = port_ticks();
+        if (received) {
+            received = 0;
+            last_byte = now;
+        } else if (decoder_in_frame(&dec) && now - last_byte > inter_byte) {
             if (decoder_timeout(&dec) != FRAME_NONE) {
                 dropped++;
             }

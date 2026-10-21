@@ -49,7 +49,7 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 
 **Acceptance:** robust two-way native packet exchange with retries and version/capability reporting.
 
-**Status (2026-10-21):** host side implemented: v1 framing with the `tests/vectors/` fixtures, the stop-and-wait link layer, the session layer (`HELLO`, `PING`, `CLOSE`), and `sprocket hello`. The DOS client in `client/dos` implements the same subset with a polled UART; its C core passes the shared fixtures, and `SPROCKET.EXE` completes the handshake and 1024-byte pings under DOSBox-X (8086) at 9600, 38400 and 115200 baud. Remaining: 86Box as an 8088, `smokey`, and NuXT.
+**Status (2026-10-21):** host side implemented: v1 framing with the `tests/vectors/` fixtures, the stop-and-wait link layer, the session layer (`HELLO`, `PING`, `CLOSE`), and `sprocket hello`. The DOS client in `client/dos` implements the same subset with a polled UART; its C core passes the shared fixtures, and `SPROCKET.EXE` completes the handshake and 1024-byte pings under DOSBox-X (8086) at 9600, 38400 and 115200 baud. Under 86Box as an IBM XT (8088 at 4.77 MHz), the handshake and 1 KB pings complete, and the client's receive path measures about 330 µs per byte: 3× headroom at 9600 baud (see [testing](testing.md#86box-ibm-xt-8088-at-477-mhz)). Remaining: `smokey` and NuXT on real UARTs.
 
 ## Milestone 3 — Native file transfer and recovery
 
