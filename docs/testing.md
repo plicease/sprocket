@@ -1,6 +1,6 @@
 # Testing and emulation
 
-**Status:** Draft. This document defines a testing strategy, not a claim that automated emulator tests already work.
+**Status:** Draft strategy. Of the emulator tests described here, only the native client's DOSBox-X smoke test (`client/dos/test/dosbox-hello.sh`) is automated; the 86Box run is manual, and the terminal-program tests are planned.
 
 ## Objectives
 
@@ -78,7 +78,7 @@ Initially automate Rust unit tests and protocol tests using a Rust mock client. 
 ## Native client tests
 
 - `make test` in `client/dos` runs the DOS client's C core, built for the host, against the same `tests/vectors/` fixtures as the Rust host, plus its session and duplicate rules.
-- `client/dos/test/dosbox-hello.sh [baud]` runs `SPROCKET.EXE` under DOSBox-X (8086, COM1 as a transparent TCP null-modem on port 5100) against `sprocket hello`. It passed at 9600, 38400 and 115200 baud on 2026-10-21, with no dropped frames or UART errors. DOSBox-X does not model UART overruns faithfully, so this does not show that the polling loop keeps up on an 8088; 86Box and real hardware must.
+- `client/dos/test/dosbox-hello.sh [baud]` runs `SPROCKET.EXE` under DOSBox-X (8086, COM1 as a transparent TCP null-modem on port 5100) against `sprocket hello`, then checks the client's counters: one frame per request (`HELLO`, each `PING`, `CLOSE`), none dropped or repeated, and no UART receive errors. With `FAULT=1` the link runs through `client/dos/test/fault-relay.py`, which flips one bit in the first `PING` request and one in the client's first `PING` response; the client must then report exactly one dropped frame and one repeated request answered from its cache, and the host two retransmissions. Both modes passed at 9600, 38400 and 115200 baud on 2026-10-21. DOSBox-X does not model UART overruns faithfully, so this does not show that the polling loop keeps up on an 8088; 86Box and real hardware must.
 
 ### 86Box: IBM XT, 8088 at 4.77 MHz
 

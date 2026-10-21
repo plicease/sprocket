@@ -2,12 +2,12 @@
 
 SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging project for vintage computers. A modern host performs complex operations; small platform-specific clients provide access to vintage hardware.
 
-**Status:** Initial design draft (2026-10-20). This document set is intended for review, not an implemented protocol specification.
+**Status (2026-10-21):** in development. The standard-protocol modes (`sprocket send`, `sprocket serve`) are implemented and validated on real hardware. Native protocol v1 is ratified; its Milestone 2 handshake is implemented on the host and in the DOS client and tested in emulators, but not yet on real hardware. Native file transfer and disk imaging are designed but not implemented. See [validation status](#validation-status) and the [roadmap](docs/roadmap.md).
 
 ## Design documents
 
 - [Architecture](docs/architecture.md): scope, components, platform independence, milestones.
-- [Protocol](docs/protocol.md): wire-level requirements and proposed packet design.
+- [Protocol](docs/protocol.md): requirements for the native protocol.
 - [Protocol v1](docs/protocol-v1.md): the ratified native wire specification: framing, sequencing, messages and test vectors.
 - [Bootstrap and transfers](docs/bootstrap.md): standard protocols, smart terminal mode, first installation, upgrades, recovery.
 - [Disk imaging](docs/imaging.md): addressing, integrity, error reporting, safety.
@@ -64,31 +64,44 @@ The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-2
 sprocket hello --port /dev/ttyS0 --baud 9600
 ```
 
-`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET COM1 9600` (port and baud as needed). So far this has run against a mock client (`cargo test`), the C client on a Linux PTY, and `SPROCKET.EXE` under DOSBox-X; not yet on real hardware.
+`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET COM1 9600` (port and baud as needed). Validation so far is listed below; it has not yet run on real hardware.
 
 ### Validation status
 
-Tested with in-memory receivers (`cargo test`), and over a Linux PTY pair against lrzsz `rz`/`rx`.
+Emulator results check function and, under 86Box, CPU timing; they do not replace real-hardware validation, which is listed separately.
+
+**`sprocket send` and `sprocket serve`.** Tested with in-memory receivers (`cargo test`), and over a Linux PTY pair against lrzsz `rz`/`rx`.
 
 Real hardware, 2026-10-20: `sprocket serve` on `twintwist` (`/dev/ttyS0`) to Windows 95 HyperTerminal on `smokey`, over a null-modem cable at 38400 8N1, no flow control. The ZMODEM download started automatically, with matching MD5 sums on both sides. XMODEM and XMODEM-1K downloads through the menu, started manually in HyperTerminal, also matched by MD5 once truncated to the original length. The menu returned after every transfer.
 
 `sprocket send --protocol xmodem` to HyperTerminal on `smokey` (38400 8N1) delivered a 43,296-byte file. It matched by MD5 once truncated to the original length, which can be done with DEBUG on DOS/Windows. Cancelling in HyperTerminal mid-transfer stopped the sender cleanly with "transfer cancelled by receiver".
 
-Not yet validated on real hardware: cancellation through the `serve` menu or during ZMODEM, and `sprocket send` with XMODEM-1K or ZMODEM. Nothing has been validated in emulators or with DOS terminal programs yet. See [testing](docs/testing.md).
+Not yet validated on real hardware: cancellation through the `serve` menu or during ZMODEM, and `sprocket send` with XMODEM-1K or ZMODEM. These modes have not yet been tested in emulators or with DOS terminal programs (Telix, Procomm Plus).
 
-## Intended repository layout
+**Native protocol (`sprocket hello` and `SPROCKET.EXE`).**
+
+- Host and client tests: the Rust host against a mock client (`cargo test`), and the DOS client's C core against the shared `tests/vectors/` fixtures (`make test` in `client/dos`).
+- The C client built for Linux, over a PTY pair.
+- Emulators, 2026-10-21: `SPROCKET.EXE` under DOSBox-X (8086) completed the handshake and 1 KB pings at 9600, 38400 and 115200 baud with no dropped frames or receive errors (`client/dos/test/dosbox-hello.sh`). With one byte corrupted in each direction, the client dropped the damaged request and answered the host's retransmitted request from its duplicate cache. Under 86Box as an IBM XT (8088 at 4.77 MHz) the handshake and 1 KB pings also completed, and the client's receive path measured about 330 µs per byte, a 3× margin at 9600 baud. 86Box's serial console delivers bytes in bursts, so back-to-back 9600 baud is not yet shown.
+- Real hardware: not yet run.
+
+See [testing](docs/testing.md) for details.
+
+## Repository layout
 
 ```text
 sprocket/
-├── Cargo.toml                 # Existing Rust template / workspace as appropriate
-├── host/                      # Rust host crate
+├── Cargo.toml          # Rust host crate (the `sprocket` command)
+├── src/                # host: transports, XMODEM/ZMODEM senders, terminal file server,
+│   └── native/         #   trace; native protocol v1 framing, link and session layers
 ├── client/
-│   └── dos/                   # Open Watcom, 8086-compatible DOS client
-├── docs/
-└── tests/                     # Integration fixtures, as needed
+│   └── dos/            # SPROCKET.EXE: Open Watcom, 8086-compatible DOS client, and its tests
+├── docs/               # design documents and the protocol v1 specification
+└── tests/
+    └── vectors/        # protocol v1 frame fixtures shared by the Rust and C tests
 ```
 
-The Rust project template is maintained separately; these documents do not prescribe changes to its existing files or license headers.
+Other clients will be sibling directories under `client/`.
 
 ## Design status vocabulary
 
@@ -96,4 +109,4 @@ The Rust project template is maintained separately; these documents do not presc
 - **Proposal**: an implementation choice requiring review.
 - **Open question**: intentionally undecided.
 
-See the documents for details. Native protocol v1 was ratified on 2026-10-21; the DOS client and imaging that use it are not implemented yet.
+See the documents for details. Native protocol v1 was ratified on 2026-10-21. Its Milestone 2 subset (`HELLO`, `PING`, `CLOSE`) is implemented in the host and the DOS client; file transfer and disk imaging are not implemented yet.

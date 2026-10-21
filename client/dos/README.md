@@ -24,7 +24,7 @@ It waits for the host (`sprocket hello` on Linux), answers until the host sends 
 | `src/dosport.c` | 8250-class UART by polling, BIOS timer ticks, Esc key |
 | `src/posixport.c` | Linux tty or PTY, for host testing |
 | `src/main.c` | The main loop |
-| `test/` | Host tests, the DOSBox-X smoke test, `BENCH.EXE`, and a pacing relay for 86Box |
+| `test/` | Host tests, the DOSBox-X smoke test and its fault-injecting relay, `BENCH.EXE`, and a pacing relay for 86Box |
 
 ## Building
 
@@ -43,7 +43,7 @@ The build treats all warnings as errors and optimizes for speed (`-ox`) without 
 
 - **`make test`** builds the C core with the host compiler and runs it against the same fixtures as the Rust host: every valid and malformed frame in `tests/vectors/`, plus the request/response pairs (`HELLO` → `HELLO_REPLY`, `PING` → its reply, an unknown type → the `ERROR` fixture), duplicate and refusal handling, sessions, and version mismatch.
 - **Host end to end:** run `build/sprocket-client` on one end of a `socat` PTY pair and `sprocket hello` on the other.
-- **DOSBox-X:** `test/dosbox-hello.sh [baud]` runs the real `SPROCKET.EXE` under DOSBox-X as an 8086, with COM1 as a TCP null-modem, and runs `sprocket hello` against it (build the host first with `cargo build`). It passes at 9600, 38400 and 115200 baud. DOSBox-X's CPU speed and UART timing are not representative, so this checks function, not speed.
+- **DOSBox-X:** `test/dosbox-hello.sh [baud]` runs the real `SPROCKET.EXE` under DOSBox-X as an 8086, with COM1 as a TCP null-modem, and runs `sprocket hello` against it (build the host first with `cargo build`). It then checks the client's counters: one frame per request, nothing dropped or repeated, no receive errors. `FAULT=1` inserts `test/fault-relay.py`, which corrupts one byte of the first `PING` and one of its response, and expects exactly one dropped frame and one repeated request answered from the cache. Both modes pass at 9600, 38400 and 115200 baud. DOSBox-X's CPU speed and UART timing are not representative, so this checks function, not speed.
 - **86Box, IBM XT (8088, 4.77 MHz):** `BENCH.EXE` gives the timing above. End to end, `sprocket hello` works through `test/pace-relay.py`, which paces the host's bytes like a real line; see [testing](../../docs/testing.md#86box-ibm-xt-8088-at-477-mhz) for the setup and its limits.
 
 ## Licensing
