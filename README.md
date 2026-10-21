@@ -58,13 +58,13 @@ Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware), but 
 
 ### Native SPROCKET
 
-The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-21. The host side of the Milestone 2 handshake is implemented; the DOS client, file transfer and disk imaging are not yet. See the [roadmap](docs/roadmap.md).
+The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-21. The Milestone 2 handshake is implemented on both sides: the host's `sprocket hello`, and the DOS client [`SPROCKET.EXE`](client/dos/README.md) (Open Watcom, 8086, polled UART). File transfer and disk imaging are not implemented yet. See the [roadmap](docs/roadmap.md).
 
 ```sh
 sprocket hello --port /dev/ttyS0 --baud 9600
 ```
 
-`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. Until a SPROCKET client exists it is tested only against a mock client (`cargo test`) and a scripted client over TCP.
+`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET COM1 9600` (port and baud as needed). So far this has run against a mock client (`cargo test`), the C client on a Linux PTY, and `SPROCKET.EXE` under DOSBox-X; not yet on real hardware.
 
 ### Validation status
 

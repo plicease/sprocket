@@ -15,3 +15,6 @@
 .idea/
 
 /setup.sh
+
+# DOS client build output
+/client/dos/build/

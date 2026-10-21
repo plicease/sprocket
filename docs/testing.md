@@ -75,6 +75,11 @@ Test at minimum: truncated frames, flipped bytes, duplicate frames (both while t
 
 Initially automate Rust unit tests and protocol tests using a Rust mock client. Add DOSBox-X end-to-end smoke tests when emulator startup and serial redirection can run unattended in CI. 86Box CI may be a later, optional job because machine/ROM configuration and headless automation are more involved. Never treat emulator passes as a substitute for real-hardware acceptance.
 
+## Native client tests
+
+- `make test` in `client/dos` runs the DOS client's C core, built for the host, against the same `tests/vectors/` fixtures as the Rust host, plus its session and duplicate rules.
+- `client/dos/test/dosbox-hello.sh [baud]` runs `SPROCKET.EXE` under DOSBox-X (8086, COM1 as a transparent TCP null-modem on port 5100) against `sprocket hello`. It passed at 9600, 38400 and 115200 baud on 2026-10-21, with no dropped frames or UART errors. DOSBox-X does not model UART overruns faithfully, so this does not show that the polling loop keeps up on an 8088; 86Box and real hardware must.
+
 ## First end-to-end emulator milestone
 
 **Acceptance:** DOSBox-X boots a DOS environment, runs the Open Watcom-built `SPROCKET.EXE`, exchanges a version/capability handshake with the Rust host over the emulated COM1 link, and completes a small verified file transfer. Follow with a repeat under 86Box configured as an 8088-class PC.
