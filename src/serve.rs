@@ -31,11 +31,12 @@ const SETTLE: Duration = Duration::from_millis(500);
 const ZMODEM_SETTLE: Duration = Duration::from_millis(1500);
 /// Command names offered by Tab completion.
 const COMMANDS: &[&str] = &[
-    "bye", "cd", "exit", "get", "help", "ls", "protocol", "pwd", "quit",
+    "bye", "cd", "dir", "exit", "get", "help", "ls", "protocol", "pwd", "quit",
 ];
 const HELP: &str = "\
 Commands:
   ls [-R] [PATH]   list a directory; -R lists everything below it
+  dir [-R] [PATH]  same as ls
   cd [DIR]         change directory; with no DIR, go to the top
   get FILE         download a file; FILE may use * and ? wildcards,
                    e.g. get *.exe
@@ -246,7 +247,7 @@ fn session(
                     Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e)))?,
                 }
             }
-            "ls" => ls(con, root, &cwd, arg)?,
+            "ls" | "dir" => ls(con, root, &cwd, arg)?,
             "get" if arg.is_empty() => con.print("Usage: get FILE\n")?,
             "get" => get(con, root, &cwd, arg, protocol, options, log)?,
             "protocol" if arg.is_empty() => {
@@ -339,7 +340,7 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// `ls [-R] [PATH]`: one entry per line, directories marked with `/`.
+/// `ls [-R] [PATH]` (or `dir`): one entry per line, directories marked with `/`.
 fn ls(con: &mut Console, root: &Root, cwd: &Path, arg: &str) -> io::Result<()> {
     let (recursive, arg) = match arg.strip_prefix("-R") {
         Some(rest) if rest.is_empty() || rest.starts_with(' ') => (true, rest.trim()),
@@ -425,7 +426,7 @@ fn complete(root: &Root, cwd: &Path, line: &str) -> Completion {
         let names = Protocol::ALL.map(Protocol::name);
         return complete_keyword(&line[..start], &line[start..], &names);
     }
-    if command == "ls" && line[start..].starts_with("-R ") {
+    if matches!(command.as_str(), "ls" | "dir") && line[start..].starts_with("-R ") {
         start += 3;
         start += line[start..].len() - line[start..].trim_start().len();
     }
@@ -909,7 +910,7 @@ mod tests {
             ),
             "{out}"
         );
-        c.send("cd docs\rls -R /\r");
+        c.send("cd docs\rDIR -R /\r");
         c.expect("/docs> ");
         let out = c.expect("\r\n/docs> ");
         assert!(out.contains("docs/readme.txt"), "{out}");

@@ -51,7 +51,7 @@ On the vintage machine, connect at the same settings and press ENTER. Then, at t
 
 | Command | Does |
 |---|---|
-| `ls [-R] [PATH]` | One entry per line, alphabetical: name and size (`512B`, `1.5kB`, `12MB`, in powers of 1024). Directories end in `/` and show no size. `-R` lists everything below, with paths relative to the listed directory. Ctrl-C stops a long listing. |
+| `ls [-R] [PATH]`, `dir` | One entry per line, alphabetical: name and size (`512B`, `1.5kB`, `12MB`, in powers of 1024). Directories end in `/` and show no size. `-R` lists everything below, with paths relative to the listed directory. Ctrl-C stops a long listing. |
 | `cd [DIR]` | Change directory; `..` goes up, a leading `/` starts at the top, and no `DIR` goes to the top. |
 | `get FILE` | Download a file by the current protocol. The last part of `FILE` may use `*` and `?` (case-insensitive), e.g. `get *.exe`, to send every match in turn. |
 | `protocol [NAME]` | Show or set the download protocol for the session: `zmodem` (`z`, the default), `xmodem` (`x`) or `xmodem-1k` (`x-1k`). |
