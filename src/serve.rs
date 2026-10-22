@@ -45,7 +45,7 @@ Commands:
   protocol [NAME]  show or set the download protocol: zmodem (z),
                    xmodem (x) or xmodem-1k (x-1k); zmodem by default
   pwd              show the current directory
-  quit             end the session
+  quit             end the session (or Ctrl-D)
 Tab completes names. Up and Down (or Ctrl-P and Ctrl-N) recall earlier
 commands. Ctrl-C stops a long listing.
 ";
@@ -108,6 +108,15 @@ struct Console<'a> {
     history: Vec<String>,
 }
 
+/// How [`Console::read_line`] ended.
+enum Input {
+    Line(String),
+    /// Ctrl-D on an empty line.
+    Eof,
+    /// No key arrived within the idle timeout.
+    Idle,
+}
+
 /// Progress through an ANSI escape sequence sent by a cursor key.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Escape {
@@ -135,12 +144,12 @@ impl<'a> Console<'a> {
     /// Read a line with echo and backspace editing. Tab calls `complete`, if
     /// given with the prompt to redraw after listing choices. Up and Down
     /// (or Ctrl-P and Ctrl-N) step through the history, and a non-empty line
-    /// is added to it. Returns `None` if no key arrives within `idle`.
+    /// is added to it. Ctrl-D on an empty line ends input, as in a shell.
     fn read_line(
         &mut self,
         idle: Duration,
         complete: Option<(&str, Completer)>,
-    ) -> io::Result<Option<String>> {
+    ) -> io::Result<Input> {
         let mut line = String::new();
         // Position in the history; `history.len()` is the line being typed,
         // which is kept in `draft` while an older one is shown.
@@ -152,7 +161,7 @@ impl<'a> Console<'a> {
                 Some(byte) => byte,
                 None => match self.t.read_byte(idle)? {
                     Some(byte) => byte,
-                    None => return Ok(None),
+                    None => return Ok(Input::Idle),
                 },
             };
             let after_cr = std::mem::replace(&mut self.after_cr, byte == b'\r');
@@ -192,7 +201,11 @@ impl<'a> Console<'a> {
                         }
                         self.history.push(entry.to_string());
                     }
-                    return Ok(Some(line));
+                    return Ok(Input::Line(line));
+                }
+                0x04 if line.is_empty() => {
+                    self.print("\n")?;
+                    return Ok(Input::Eof);
                 }
                 // Ctrl-P: previous line; Ctrl-N: next line.
                 0x10 | 0x0e => {
@@ -292,9 +305,16 @@ fn session(
         let prompt = format!("{}> ", location(&cwd));
         con.print(&prompt)?;
         let completer = |line: &str| complete(root, &cwd, line);
-        let Some(input) = con.read_line(options.idle_timeout, Some((&prompt, &completer)))? else {
-            con.print("\nIdle timeout.\n")?;
-            return Ok(());
+        let input = match con.read_line(options.idle_timeout, Some((&prompt, &completer)))? {
+            Input::Line(line) => line,
+            Input::Eof => {
+                con.print("Goodbye.\n")?;
+                return Ok(());
+            }
+            Input::Idle => {
+                con.print("\nIdle timeout.\n")?;
+                return Ok(());
+            }
         };
         let input = input.trim();
         let (command, arg) = match input.split_once(' ') {
@@ -1228,6 +1248,17 @@ mod tests {
         let out = c.expect("/docs> ");
         assert_eq!(out, "\r\n/docs\r\n/docs> ");
         c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn ctrl_d_logs_out_only_on_an_empty_line() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("pw\x04d\r");
+        c.expect("pwd\r\n/\r\n/> ");
+        c.send("\x04");
+        assert_eq!(c.expect("Goodbye."), "\r\nGoodbye.");
         c.finish().unwrap();
     }
 

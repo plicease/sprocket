@@ -55,7 +55,7 @@ On the vintage machine, connect at the same settings and press ENTER. Then, at t
 | `cd [DIR]` | Change directory; `..` goes up, a leading `/` starts at the top, and no `DIR` goes to the top. |
 | `get FILE` | Download a file by the current protocol. The last part of `FILE` may use `*` and `?` (case-insensitive), e.g. `get *.exe`, to send every match in turn. |
 | `protocol [NAME]` | Show or set the download protocol for the session: `zmodem` (`z`, the default), `xmodem` (`x`) or `xmodem-1k` (`x-1k`). |
-| `pwd`, `help`, `quit` | Show the current directory, list commands, end the session (`bye` and `exit` also work). |
+| `pwd`, `help`, `quit` | Show the current directory, list commands, end the session (`bye`, `exit`, or Ctrl-D on an empty line also work). |
 
 Names are matched ignoring case, as on DOS: `get UNZIP.EXE` finds `unzip.exe`, and `cd GAMES` shows the directory's real name in the prompt. If a directory holds names that differ only in case, the exact spelling picks one, and any other spelling is refused as ambiguous. Tab completes command names, protocol names and file names (only directories after `cd`). If several names match, a second Tab is not needed: the choices are listed and the line is redrawn. Up and Down recall the session's earlier commands; on terminals whose arrow keys send nothing, use Ctrl-P and Ctrl-N. The protocols:
 
