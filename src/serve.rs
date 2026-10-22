@@ -22,6 +22,8 @@ const NAME_COLUMN: usize = 40;
 const SCREEN_WIDTH: usize = 80;
 /// Longest accepted input line.
 const MAX_INPUT: usize = 200;
+/// Commands remembered for recall with the arrow keys.
+const HISTORY: usize = 50;
 /// How long to wait for a key at the "press ENTER" banner before checking again.
 const BANNER_WAIT: Duration = Duration::from_secs(3600);
 /// Quiet period used to discard protocol leftovers after a transfer.
@@ -44,7 +46,8 @@ Commands:
                    xmodem (x) or xmodem-1k (x-1k); zmodem by default
   pwd              show the current directory
   quit             end the session
-Tab completes names. Ctrl-C stops a long listing.
+Tab completes names. Up and Down (or Ctrl-P and Ctrl-N) recall earlier
+commands. Ctrl-C stops a long listing.
 ";
 
 /// Server settings.
@@ -101,6 +104,18 @@ struct Console<'a> {
     after_cr: bool,
     /// Keys typed while output was being sent, kept for the next prompt.
     typeahead: VecDeque<u8>,
+    /// Earlier input lines, oldest first, recalled with Up and Down.
+    history: Vec<String>,
+}
+
+/// Progress through an ANSI escape sequence sent by a cursor key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Escape {
+    None,
+    /// Received ESC.
+    Start,
+    /// Received `ESC [` or `ESC O`; waiting for the final byte.
+    Body,
 }
 
 impl<'a> Console<'a> {
@@ -109,6 +124,7 @@ impl<'a> Console<'a> {
             t,
             after_cr: false,
             typeahead: VecDeque::new(),
+            history: Vec::new(),
         }
     }
 
@@ -117,14 +133,20 @@ impl<'a> Console<'a> {
     }
 
     /// Read a line with echo and backspace editing. Tab calls `complete`, if
-    /// given with the prompt to redraw after listing choices. Returns `None`
-    /// if no key arrives within `idle`.
+    /// given with the prompt to redraw after listing choices. Up and Down
+    /// (or Ctrl-P and Ctrl-N) step through the history, and a non-empty line
+    /// is added to it. Returns `None` if no key arrives within `idle`.
     fn read_line(
         &mut self,
         idle: Duration,
         complete: Option<(&str, Completer)>,
     ) -> io::Result<Option<String>> {
         let mut line = String::new();
+        // Position in the history; `history.len()` is the line being typed,
+        // which is kept in `draft` while an older one is shown.
+        let mut recalled = self.history.len();
+        let mut draft = String::new();
+        let mut escape = Escape::None;
         loop {
             let byte = match self.typeahead.pop_front() {
                 Some(byte) => byte,
@@ -134,11 +156,64 @@ impl<'a> Console<'a> {
                 },
             };
             let after_cr = std::mem::replace(&mut self.after_cr, byte == b'\r');
-            match byte {
+            // Cursor keys arrive as ESC [ A or ESC O A (Up), B (Down), and so
+            // on; only Up and Down do anything.
+            let key = match (escape, byte) {
+                (Escape::None, 0x1b) => {
+                    escape = Escape::Start;
+                    continue;
+                }
+                (Escape::Start, b'[' | b'O') => {
+                    escape = Escape::Body;
+                    continue;
+                }
+                (Escape::Body, 0x20..=0x3f) => continue,
+                (Escape::Body, _) => {
+                    escape = Escape::None;
+                    match byte {
+                        b'A' => 0x10,
+                        b'B' => 0x0e,
+                        _ => continue,
+                    }
+                }
+                (_, byte) => {
+                    escape = Escape::None;
+                    byte
+                }
+            };
+            match key {
                 b'\n' if after_cr => {}
                 b'\r' | b'\n' => {
                     self.print("\n")?;
+                    let entry = line.trim();
+                    if !entry.is_empty() && self.history.last().map(String::as_str) != Some(entry) {
+                        if self.history.len() == HISTORY {
+                            self.history.remove(0);
+                        }
+                        self.history.push(entry.to_string());
+                    }
                     return Ok(Some(line));
+                }
+                // Ctrl-P: previous line; Ctrl-N: next line.
+                0x10 | 0x0e => {
+                    let next = match key {
+                        0x10 if recalled > 0 => recalled - 1,
+                        0x0e if recalled < self.history.len() => recalled + 1,
+                        _ => {
+                            self.t.write_all(b"\x07")?;
+                            continue;
+                        }
+                    };
+                    if recalled == self.history.len() {
+                        draft = line.clone();
+                    }
+                    recalled = next;
+                    let shown = match self.history.get(recalled) {
+                        Some(old) => old.clone(),
+                        None => std::mem::take(&mut draft),
+                    };
+                    self.retype(&line, &shown)?;
+                    line = shown;
                 }
                 0x08 | 0x7f => {
                     if line.pop().is_some() {
@@ -211,6 +286,7 @@ fn session(
 ) -> io::Result<()> {
     let mut cwd = PathBuf::new();
     let mut protocol = Protocol::Zmodem;
+    con.history.clear();
     con.print("\nType help for a list of commands.\n")?;
     loop {
         let prompt = format!("{}> ", location(&cwd));
@@ -1037,6 +1113,38 @@ mod tests {
         c.expect("\r\n/\r\n");
         c.send("quit\r");
         c.expect("Goodbye.");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn history_recalls_earlier_lines() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("cd docs\rpwd\r");
+        c.expect("\r\n/docs\r\n/docs> ");
+        // Up recalls the newest line; Enter runs it again, and the repeat is
+        // stored once.
+        c.send("\x1b[A\r");
+        c.expect("pwd\r\n/docs\r\n/docs> ");
+        let erase = |n: usize| "\x08 \x08".repeat(n);
+        let steps = [
+            ("ls", "ls".to_string()),
+            ("\x1b[A", erase(2) + "pwd"),
+            ("\x1bOA", erase(3) + "cd docs"),
+            ("\x10", "\x07".to_string()),
+            ("\x1b[B", erase(7) + "pwd"),
+            ("\x1b[D\x1b[3~\x0e", erase(3) + "ls"),
+            ("\x0e", "\x07".to_string()),
+            ("\x10", erase(2) + "pwd"),
+        ];
+        for (keys, echo) in steps {
+            c.send(keys);
+            assert_eq!(c.expect(&echo), echo, "{keys:?}");
+        }
+        c.send("\r");
+        let out = c.expect("/docs> ");
+        assert_eq!(out, "\r\n/docs\r\n/docs> ");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
