@@ -37,11 +37,12 @@ const COMMANDS: &[&str] = &[
 ];
 const HELP: &str = "\
 Commands:
-  ls [-R] [PATH]   list a directory; -R lists everything below it
-  dir [-R] [PATH]  same as ls
   cd [DIR]         change directory; with no DIR, go to the top
+  dir [-R] [PATH]  same as ls
   get FILE         download a file; FILE may use * and ? wildcards,
                    e.g. get *.exe
+  help             show this list
+  ls [-R] [PATH]   list a directory; -R lists everything below it
   protocol [NAME]  show or set the download protocol: zmodem (z),
                    xmodem (x) or xmodem-1k (x-1k); zmodem by default
   pwd              show the current directory
@@ -1328,6 +1329,20 @@ mod tests {
         assert!(out.lines().all(|l| l.len() <= 80), "{out}");
         c.send("quit\r");
         c.finish().unwrap();
+    }
+
+    #[test]
+    fn help_lists_commands_alphabetically() {
+        let names: Vec<&str> = HELP
+            .lines()
+            .filter_map(|l| l.strip_prefix("  "))
+            .filter(|l| !l.starts_with(' '))
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        assert_eq!(names.len(), 8, "{names:?}");
     }
 
     #[test]
