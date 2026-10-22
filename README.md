@@ -57,7 +57,7 @@ On the vintage machine, connect at the same settings and press ENTER. Then, at t
 | `protocol [NAME]` | Show or set the download protocol for the session: `zmodem` (`z`, the default), `xmodem` (`x`) or `xmodem-1k` (`x-1k`). |
 | `pwd`, `help`, `quit` | Show the current directory, list commands, end the session (`bye` and `exit` also work). |
 
-Tab completes command names, protocol names and file names (only directories after `cd`). If several names match, a second Tab is not needed: the choices are listed and the line is redrawn. Up and Down recall the session's earlier commands; on terminals whose arrow keys send nothing, use Ctrl-P and Ctrl-N. The protocols:
+Names are matched ignoring case, as on DOS: `get UNZIP.EXE` finds `unzip.exe`, and `cd GAMES` shows the directory's real name in the prompt. If a directory holds names that differ only in case, the exact spelling picks one, and any other spelling is refused as ambiguous. Tab completes command names, protocol names and file names (only directories after `cd`). If several names match, a second Tab is not needed: the choices are listed and the line is redrawn. Up and Down recall the session's earlier commands; on terminals whose arrow keys send nothing, use Ctrl-P and Ctrl-N. The protocols:
 
 - **ZMODEM** (default): terminals with ZMODEM auto-download, such as Telix or Procomm Plus, start receiving by themselves. With other ZMODEM-capable terminals, start a ZMODEM download manually. ZMODEM preserves the filename and exact length.
 - **XMODEM / XMODEM-1K**: for terminals without ZMODEM; set it with `protocol x` or `protocol x-1k`, then start the XMODEM receive manually after each `get`.

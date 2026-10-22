@@ -101,6 +101,43 @@ impl Root {
         Ok(entries)
     }
 
+    /// Find `rel` ignoring case, as DOS users expect, and return it with the
+    /// names as they are on disk. Each component matches its exact name if
+    /// there is one, otherwise the one listed entry that differs only in
+    /// case; several such entries are ambiguous and refused. Matching is
+    /// against [`Root::list`], so hidden and escaping names are never found.
+    pub fn find(&self, rel: &Path) -> io::Result<PathBuf> {
+        if self.resolve(rel).is_ok() {
+            return Ok(rel.to_path_buf());
+        }
+        let mut found = PathBuf::new();
+        for component in rel.components() {
+            let name = match component {
+                Component::CurDir => continue,
+                Component::Normal(name) if is_hidden(name) => return Err(hidden(rel)),
+                Component::Normal(name) => name.to_string_lossy(),
+                _ => return Err(outside(rel)),
+            };
+            let entries = self.list(&found)?;
+            let lower = name.to_lowercase();
+            let mut similar = entries.iter().filter(|e| e.name.to_lowercase() == lower);
+            let entry = match entries.iter().find(|e| e.name == name) {
+                Some(exact) => exact,
+                None => match (similar.next(), similar.next()) {
+                    (Some(only), None) => only,
+                    (None, _) => return Err(hidden(rel)),
+                    (Some(_), Some(_)) => {
+                        return Err(io::Error::other(
+                            "several names differ only in case; type the exact name",
+                        ));
+                    }
+                },
+            };
+            found.push(&entry.name);
+        }
+        Ok(found)
+    }
+
     /// Whether `rel` is a directory or a regular file (and its size).
     pub fn stat(&self, rel: &Path) -> io::Result<Kind> {
         let meta = fs::metadata(self.resolve(rel)?)?;
@@ -143,6 +180,7 @@ fn is_hidden(name: &std::ffi::OsStr) -> bool {
     name.as_encoded_bytes().starts_with(b".")
 }
 
+/// A name that is absent, or hidden and so treated as absent.
 fn hidden(rel: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
@@ -265,6 +303,43 @@ mod tests {
         }
         assert!(root.list(Path::new(".dot")).is_err());
         assert!(root.list(Path::new("peekdir")).is_err());
+    }
+
+    #[test]
+    fn find_ignores_case() {
+        let (_tmp, root) = fixture();
+        let found = |rel: &str| root.find(Path::new(rel)).map_err(|e| e.kind());
+        assert_eq!(found("A.TXT"), Ok(PathBuf::from("a.txt")));
+        assert_eq!(found("b.txt"), Ok(PathBuf::from("B.TXT")));
+        assert_eq!(found("SUB/C.Txt"), Ok(PathBuf::from("sub/c.txt")));
+        assert_eq!(found("./Inside/./C.TXT"), Ok(PathBuf::from("inside/c.txt")));
+        assert_eq!(found("nope"), Err(io::ErrorKind::NotFound));
+        assert_eq!(found("a.txt/x"), Err(io::ErrorKind::NotADirectory));
+        assert_eq!(found("../OUTSIDE"), Err(io::ErrorKind::PermissionDenied));
+        for rel in [
+            ".HIDDEN",
+            ".Dot/D.TXT",
+            "PEEK",
+            "PeekDir/d.txt",
+            "ESCAPE.TXT",
+            "Escape/secret.txt",
+        ] {
+            assert!(found(rel).is_err(), "{rel} was found");
+        }
+    }
+
+    #[test]
+    fn find_prefers_exact_case() {
+        let (tmp, root) = fixture();
+        fs::write(tmp.path().join("root/A.txt"), b"A").unwrap();
+        fs::create_dir(tmp.path().join("root/Sub")).unwrap();
+        let found = |rel: &str| root.find(Path::new(rel)).map_err(|e| e.kind());
+        assert_eq!(found("a.txt"), Ok(PathBuf::from("a.txt")));
+        assert_eq!(found("A.txt"), Ok(PathBuf::from("A.txt")));
+        assert_eq!(found("Sub"), Ok(PathBuf::from("Sub")));
+        assert_eq!(found("sub/C.TXT"), Ok(PathBuf::from("sub/c.txt")));
+        assert_eq!(found("A.TXT"), Err(io::ErrorKind::Other));
+        assert_eq!(found("SUB/c.txt"), Err(io::ErrorKind::Other));
     }
 
     #[test]

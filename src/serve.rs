@@ -315,9 +315,9 @@ fn session(
                 } else {
                     target(&cwd, arg)
                 };
-                match root.stat(&dir) {
-                    Ok(Kind::Dir) => cwd = dir,
-                    Ok(Kind::File { .. }) => {
+                match lookup(root, &dir) {
+                    Ok((Kind::Dir, dir)) => cwd = dir,
+                    Ok((Kind::File { .. }, _)) => {
                         con.print(&format!("{}: Not a directory\n", ascii(arg)))?
                     }
                     Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e)))?,
@@ -356,14 +356,17 @@ fn get(
     let path = target(cwd, arg);
     let pattern = file_name(&path);
     if !pattern.contains(['*', '?']) {
-        return match root.stat(&path) {
-            Ok(Kind::File { .. }) => transfer(con, root, &[path], protocol, options, log),
-            Ok(Kind::Dir) => con.print(&format!("{}: Is a directory\n", ascii(arg))),
+        return match lookup(root, &path) {
+            Ok((Kind::File { .. }, path)) => transfer(con, root, &[path], protocol, options, log),
+            Ok((Kind::Dir, _)) => con.print(&format!("{}: Is a directory\n", ascii(arg))),
             Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
         };
     }
-    let dir = path.parent().unwrap_or(Path::new(""));
-    let entries = match root.list(dir) {
+    let dir = match root.find(path.parent().unwrap_or(Path::new(""))) {
+        Ok(dir) => dir,
+        Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
+    };
+    let entries = match root.list(&dir) {
         Ok(entries) => entries,
         Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
     };
@@ -422,11 +425,10 @@ fn ls(con: &mut Console, root: &Root, cwd: &Path, arg: &str) -> io::Result<()> {
         Some(rest) if rest.is_empty() || rest.starts_with(' ') => (true, rest.trim()),
         _ => (false, arg),
     };
-    let path = target(cwd, arg);
     let mut lines = Vec::new();
-    match root.stat(&path) {
-        Ok(Kind::File { size }) => lines.push((arg.to_string(), Some(size))),
-        Ok(Kind::Dir) => {
+    match lookup(root, &target(cwd, arg)) {
+        Ok((Kind::File { size }, _)) => lines.push((arg.to_string(), Some(size))),
+        Ok((Kind::Dir, path)) => {
             let mut seen = HashSet::from_iter(root.resolve(&path).ok());
             if let Err(e) = walk(root, &path, "", recursive, &mut seen, &mut lines) {
                 return con.print(&format!("{}: {}\n", ascii(arg), reason(&e)));
@@ -511,7 +513,10 @@ fn complete(root: &Root, cwd: &Path, line: &str) -> Completion {
         Some(i) => word.split_at(i + 1),
         None => ("", word),
     };
-    let Ok(entries) = root.list(&target(cwd, dir_part)) else {
+    let Ok(entries) = root
+        .find(&target(cwd, dir_part))
+        .and_then(|dir| root.list(&dir))
+    else {
         return unchanged();
     };
     let prefix = prefix.to_lowercase();
@@ -583,6 +588,12 @@ fn complete_keyword(head: &str, word: &str, keywords: &[&str]) -> Completion {
             choices: names.iter().map(|n| n.to_string()).collect(),
         },
     }
+}
+
+/// Find a typed path ignoring case; returns its kind and on-disk path.
+fn lookup(root: &Root, path: &Path) -> io::Result<(Kind, PathBuf)> {
+    let found = root.find(path)?;
+    Ok((root.stat(&found)?, found))
 }
 
 /// Resolve a typed path against `cwd` without touching the filesystem.
@@ -1040,6 +1051,78 @@ mod tests {
         c.expect("Unknown command.");
         c.send("cd /../..\rpwd\r");
         c.expect("\r\n/\r\n");
+        c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn literal_paths_ignore_case() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("CD DOCS\r");
+        c.expect("/docs> ");
+        c.send("LS README.TXT\rDIR /DOCS\rcd /\rls Docs/Readme.Txt\r");
+        let out = c.expect("\r\n/> ");
+        assert!(out.contains("README.TXT      5B\r\n/docs> "), "{out}");
+        assert!(out.contains("readme.txt      5B\r\n/docs> "), "{out}");
+        let out = c.expect("\r\n/> ");
+        assert!(out.contains("Docs/Readme.Txt      5B"), "{out}");
+        // Completion through a directory typed in the wrong case.
+        c.send("ls DOCS/R\t");
+        c.expect("eadme.txt ");
+        c.send("\r");
+        c.expect("\r\n/> ");
+        c.send("GET DOCS/README.TXT\r");
+        c.expect("five times to cancel.\r\n");
+        let rx = zmodem::test_receiver::receive(&mut c.t, None);
+        assert_eq!(
+            (&rx.name[..], &rx.data[..]),
+            (&b"readme.txt"[..], &b"hello"[..])
+        );
+        c.expect("\r\n/> ");
+        c.send("get DOCS/*.TXT\r");
+        c.expect("five times to cancel.\r\n");
+        let rx = zmodem::test_receiver::receive(&mut c.t, None);
+        assert_eq!(rx.name, b"readme.txt");
+        c.expect("\r\n/> ");
+        c.send("get .HIDDEN\rget DOCS/.SECRET\rquit\r");
+        let out = c.expect("Goodbye.");
+        assert_eq!(out.matches("No such file or directory").count(), 2, "{out}");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn names_differing_only_in_case() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("readme.txt"), b"lower").unwrap();
+        fs::write(tmp.path().join("README.TXT"), b"UPPER").unwrap();
+        fs::create_dir(tmp.path().join("Games")).unwrap();
+        fs::create_dir(tmp.path().join("games")).unwrap();
+        let mut c = start_in(tmp, fast());
+        c.expect(PROMPT);
+        // Each exact name reaches its own entry.
+        c.send("cd Games\rcd ..\rcd games\r");
+        c.expect("/Games> ");
+        c.expect("/games> ");
+        c.send("cd /\rls README.TXT\rget Readme.txt\rcd GAMES\r");
+        c.expect("\r\n/> ");
+        let out = c.expect("/> ");
+        assert!(out.contains("README.TXT      5B"), "{out}");
+        let out = c.expect("/> ");
+        assert!(
+            out.contains("Readme.txt: several names differ only in case"),
+            "{out}"
+        );
+        let out = c.expect("/> ");
+        assert!(
+            out.contains("GAMES: several names differ only in case"),
+            "{out}"
+        );
+        c.send("get readme.txt\r");
+        c.expect("five times to cancel.\r\n");
+        let rx = zmodem::test_receiver::receive(&mut c.t, None);
+        assert_eq!(rx.data, b"lower");
+        c.expect("/> ");
         c.send("quit\r");
         c.finish().unwrap();
     }
