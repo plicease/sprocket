@@ -41,18 +41,28 @@ XMODEM is the lowest common denominator and remains the first-install path. It p
 
 ### Smart terminal (file server)
 
-Serve a read-only directory as a plain-ASCII menu to whatever terminal program the vintage machine runs:
+Serve a read-only directory, browsed with ftp-style commands, to whatever terminal program the vintage machine runs:
 
 ```sh
 sprocket serve --port /dev/ttyS0 --baud 38400 --root ~/vintage/files
 ```
 
-On the vintage machine, connect at the same settings and press ENTER. Pick a file by number, then a protocol:
+On the vintage machine, connect at the same settings and press ENTER. Then, at the `/> ` prompt:
+
+| Command | Does |
+|---|---|
+| `ls [-R] [PATH]` | One entry per line, alphabetical: name and size (`512B`, `1.5kB`, `12MB`, in powers of 1024). Directories end in `/` and show no size. `-R` lists everything below, with paths relative to the listed directory. Ctrl-C stops a long listing. |
+| `cd [DIR]` | Change directory; `..` goes up, a leading `/` starts at the top, and no `DIR` goes to the top. |
+| `get FILE` | Download a file by the current protocol. The last part of `FILE` may use `*` and `?` (case-insensitive), e.g. `get *.exe`, to send every match in turn. |
+| `protocol [NAME]` | Show or set the download protocol for the session: `zmodem` (`z`, the default), `xmodem` (`x`) or `xmodem-1k` (`x-1k`). |
+| `pwd`, `help`, `quit` | Show the current directory, list commands, end the session (`bye` and `exit` also work). |
+
+Tab completes command names, protocol names and file names (only directories after `cd`). If several names match, a second Tab is not needed: the choices are listed and the line is redrawn. The protocols:
 
 - **ZMODEM** (default): terminals with ZMODEM auto-download, such as Telix or Procomm Plus, start receiving by themselves. With other ZMODEM-capable terminals, start a ZMODEM download manually. ZMODEM preserves the filename and exact length.
-- **XMODEM / XMODEM-1K**: for terminals without ZMODEM; start the XMODEM receive manually after choosing it.
+- **XMODEM / XMODEM-1K**: for terminals without ZMODEM; set it with `protocol x` or `protocol x-1k`, then start the XMODEM receive manually after each `get`.
 
-The menu returns after each transfer, cancellation (Ctrl-X), or error. Only files under `--root` are reachable: `..` and symlinks that lead outside it are refused, and hidden files are not listed. Nothing on the host is ever written. A session ends on `Q`, or after `--idle` seconds (default 600) without input. `sprocket serve` keeps running and reopens the port if it fails or a TCP link drops.
+The prompt returns after each transfer, cancellation (Ctrl-X), or error. When `get` matched several files, a failed or cancelled transfer stops the rest (a ZMODEM skip moves on to the next file). With XMODEM, start a receive for each file as it is announced. Only files under `--root` are reachable: `..` and symlinks that lead outside it are refused, and hidden files (names starting with `.`, or symlinks to them) are never listed, completed or sent. Nothing on the host is ever written. A session ends on `quit`, or after `--idle` seconds (default 600) without input. `sprocket serve` keeps running and reopens the port if it fails or a TCP link drops.
 
 Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware), but only while its *Transfer → Receive File* protocol is set to Zmodem. After an XMODEM receive, that setting stays on Xmodem, and HyperTerminal declines the next ZMODEM auto-download (reported as "receiver skipped the file"). Set the protocol back to Zmodem first, or just retry. For other terminals, do not assume ZMODEM or auto-download support. XMODEM is always offered.
 

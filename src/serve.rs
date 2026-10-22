@@ -2,10 +2,12 @@
 //! Interactive terminal file server.
 //!
 //! A vintage machine running an ordinary terminal program browses a
-//! read-only file tree and downloads files by ZMODEM (auto-download where
-//! the terminal supports it) or XMODEM. The menu is plain ASCII with CR LF
-//! line endings and no ANSI sequences, sized for an 80x24 screen.
+//! read-only file tree with ftp-style commands (`ls`, `cd`, `get`) and
+//! downloads files by ZMODEM (auto-download where the terminal supports it)
+//! or XMODEM. Output is plain ASCII with CR LF line endings and no ANSI
+//! sequences. Tab completes command and file names.
 
+use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,19 +16,35 @@ use crate::files::{Kind, Root};
 use crate::transport::Transport;
 use crate::{xmodem, zmodem};
 
-/// Entries shown per page; leaves room for the header and prompt on 24 lines.
-const PAGE: usize = 16;
-/// Longest name shown in a listing before truncation.
-const NAME_WIDTH: usize = 50;
+/// Names longer than this push their size out of the listing's column.
+const NAME_COLUMN: usize = 40;
+/// Screen width used to lay out completion choices.
+const SCREEN_WIDTH: usize = 80;
 /// Longest accepted input line.
-const MAX_INPUT: usize = 16;
+const MAX_INPUT: usize = 200;
 /// How long to wait for a key at the "press ENTER" banner before checking again.
 const BANNER_WAIT: Duration = Duration::from_secs(3600);
 /// Quiet period used to discard protocol leftovers after a transfer.
 const SETTLE: Duration = Duration::from_millis(500);
 /// Quiet period after ZMODEM. Windows 95 HyperTerminal repeats its ZFIN about
-/// 730 ms after the session ends; a shorter wait lets it reach the menu as input.
+/// 730 ms after the session ends; a shorter wait lets it reach the prompt as input.
 const ZMODEM_SETTLE: Duration = Duration::from_millis(1500);
+/// Command names offered by Tab completion.
+const COMMANDS: &[&str] = &[
+    "bye", "cd", "exit", "get", "help", "ls", "protocol", "pwd", "quit",
+];
+const HELP: &str = "\
+Commands:
+  ls [-R] [PATH]   list a directory; -R lists everything below it
+  cd [DIR]         change directory; with no DIR, go to the top
+  get FILE         download a file; FILE may use * and ? wildcards,
+                   e.g. get *.exe
+  protocol [NAME]  show or set the download protocol: zmodem (z),
+                   xmodem (x) or xmodem-1k (x-1k); zmodem by default
+  pwd              show the current directory
+  quit             end the session
+Tab completes names. Ctrl-C stops a long listing.
+";
 
 /// Server settings.
 #[derive(Clone, Debug)]
@@ -56,7 +74,7 @@ pub fn run(
 ) -> io::Result<()> {
     let mut con = Console::new(transport);
     loop {
-        con.print("\nSPROCKET file server. Press ENTER for the menu.\n")?;
+        con.print("\nSPROCKET file server. Press ENTER to start.\n")?;
         while !matches!(con.t.read_byte(BANNER_WAIT)?, Some(b'\r' | b'\n')) {}
         log("session started");
         session(&mut con, root, options, log)?;
@@ -64,29 +82,55 @@ pub fn run(
     }
 }
 
+/// Computes the [`Completion`] for an input line.
+type Completer<'a> = &'a dyn Fn(&str) -> Completion;
+
+/// What Tab does to the input line.
+struct Completion {
+    /// The line after completion; unchanged if nothing could be added.
+    line: String,
+    /// Possible names to show when the line could not be extended.
+    choices: Vec<String>,
+}
+
 /// Line-oriented access to a dumb terminal.
 struct Console<'a> {
     t: &'a mut dyn Transport,
     /// The previous byte was CR, so a following LF is part of the same newline.
     after_cr: bool,
+    /// Keys typed while output was being sent, kept for the next prompt.
+    typeahead: VecDeque<u8>,
 }
 
 impl<'a> Console<'a> {
     fn new(t: &'a mut dyn Transport) -> Self {
-        Self { t, after_cr: false }
+        Self {
+            t,
+            after_cr: false,
+            typeahead: VecDeque::new(),
+        }
     }
 
     fn print(&mut self, text: &str) -> io::Result<()> {
         self.t.write_all(text.replace('\n', "\r\n").as_bytes())
     }
 
-    /// Read a line with echo and backspace editing. Returns `None` if no key
-    /// arrives within `idle`.
-    fn read_line(&mut self, idle: Duration) -> io::Result<Option<String>> {
+    /// Read a line with echo and backspace editing. Tab calls `complete`, if
+    /// given with the prompt to redraw after listing choices. Returns `None`
+    /// if no key arrives within `idle`.
+    fn read_line(
+        &mut self,
+        idle: Duration,
+        complete: Option<(&str, Completer)>,
+    ) -> io::Result<Option<String>> {
         let mut line = String::new();
         loop {
-            let Some(byte) = self.t.read_byte(idle)? else {
-                return Ok(None);
+            let byte = match self.typeahead.pop_front() {
+                Some(byte) => byte,
+                None => match self.t.read_byte(idle)? {
+                    Some(byte) => byte,
+                    None => return Ok(None),
+                },
             };
             let after_cr = std::mem::replace(&mut self.after_cr, byte == b'\r');
             match byte {
@@ -100,6 +144,21 @@ impl<'a> Console<'a> {
                         self.t.write_all(b"\x08 \x08")?;
                     }
                 }
+                b'\t' => {
+                    let Some((prompt, complete)) = complete else {
+                        continue;
+                    };
+                    let done = complete(&line);
+                    if done.line != line && done.line.len() <= MAX_INPUT {
+                        self.retype(&line, &done.line)?;
+                        line = done.line;
+                    } else if done.choices.is_empty() {
+                        self.t.write_all(b"\x07")?;
+                    } else {
+                        let choices = columns(&done.choices, SCREEN_WIDTH);
+                        self.print(&format!("\n{choices}{prompt}{line}"))?;
+                    }
+                }
                 0x20..=0x7e if line.len() < MAX_INPUT => {
                     line.push(byte as char);
                     self.t.write_all(&[byte])?;
@@ -109,9 +168,35 @@ impl<'a> Console<'a> {
         }
     }
 
-    /// Discard protocol leftovers so they are not read as menu input.
+    /// Replace `old`, already echoed, with `new` on screen.
+    fn retype(&mut self, old: &str, new: &str) -> io::Result<()> {
+        let same = old
+            .bytes()
+            .zip(new.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let mut out = b"\x08 \x08".repeat(old.len() - same);
+        out.extend_from_slice(&new.as_bytes()[same..]);
+        self.t.write_all(&out)
+    }
+
+    /// Whether the user pressed Ctrl-C or Ctrl-X. Other keys are kept as
+    /// typeahead for the next prompt.
+    fn interrupted(&mut self) -> io::Result<bool> {
+        while let Some(byte) = self.t.read_byte(Duration::ZERO)? {
+            if matches!(byte, 0x03 | 0x18) {
+                self.typeahead.clear();
+                return Ok(true);
+            }
+            self.typeahead.push_back(byte);
+        }
+        Ok(false)
+    }
+
+    /// Discard protocol leftovers so they are not read as commands.
     fn settle(&mut self, quiet: Duration) -> io::Result<()> {
         self.t.drain(quiet)?;
+        self.typeahead.clear();
         self.after_cr = false;
         Ok(())
     }
@@ -124,111 +209,450 @@ fn session(
     log: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
     let mut cwd = PathBuf::new();
-    let mut page = 0;
+    let mut protocol = Protocol::Zmodem;
+    con.print("\nType help for a list of commands.\n")?;
     loop {
-        let entries = match root.list(&cwd) {
-            Ok(entries) => entries,
-            Err(e) => {
-                con.print(&format!("Cannot list {}: {e}\n", location(&cwd)))?;
-                if cwd.as_os_str().is_empty() {
-                    return Ok(());
-                }
-                cwd = PathBuf::new();
-                continue;
-            }
-        };
-        let pages = entries.len().div_ceil(PAGE).max(1);
-        page = page.min(pages - 1);
-
-        let mut screen = format!("\n{}   (page {} of {pages})\n", location(&cwd), page + 1);
-        if entries.is_empty() {
-            screen.push_str("  (empty)\n");
-        }
-        for (i, entry) in entries.iter().enumerate().skip(page * PAGE).take(PAGE) {
-            let (name, size) = match entry.kind {
-                Kind::Dir => (format!("{}/", entry.name), "<DIR>".to_string()),
-                Kind::File { size } => (entry.name.clone(), size.to_string()),
-            };
-            screen.push_str(&format!(
-                "{:>4}) {:<NAME_WIDTH$} {:>12}\n",
-                i + 1,
-                display_name(&name),
-                size
-            ));
-        }
-        screen.push_str("Number to open, U)p, N)ext page, P)rev page, Q)uit: ");
-        con.print(&screen)?;
-
-        let Some(input) = con.read_line(options.idle_timeout)? else {
+        let prompt = format!("{}> ", location(&cwd));
+        con.print(&prompt)?;
+        let completer = |line: &str| complete(root, &cwd, line);
+        let Some(input) = con.read_line(options.idle_timeout, Some((&prompt, &completer)))? else {
             con.print("\nIdle timeout.\n")?;
             return Ok(());
         };
-        match input.trim().to_ascii_uppercase().as_str() {
+        let input = input.trim();
+        let (command, arg) = match input.split_once(' ') {
+            Some((command, arg)) => (command, arg.trim()),
+            None => (input, ""),
+        };
+        match command.to_ascii_lowercase().as_str() {
             "" => {}
-            "Q" => {
+            "quit" | "bye" | "exit" => {
                 con.print("Goodbye.\n")?;
                 return Ok(());
             }
-            "U" | ".." => {
-                cwd.pop();
-                page = 0;
-            }
-            "N" => page += 1,
-            "P" => page = page.saturating_sub(1),
-            choice => match choice.parse::<usize>() {
-                Ok(n) if (1..=entries.len()).contains(&n) => {
-                    let entry = &entries[n - 1];
-                    match entry.kind {
-                        Kind::Dir => {
-                            cwd.push(&entry.name);
-                            page = 0;
-                        }
-                        Kind::File { .. } => {
-                            transfer(con, root, &cwd.join(&entry.name), &entry.name, options, log)?;
-                        }
+            "help" | "?" => con.print(HELP)?,
+            "pwd" => con.print(&format!("{}\n", location(&cwd)))?,
+            "cd" => {
+                let dir = if arg.is_empty() {
+                    PathBuf::new()
+                } else {
+                    target(&cwd, arg)
+                };
+                match root.stat(&dir) {
+                    Ok(Kind::Dir) => cwd = dir,
+                    Ok(Kind::File { .. }) => {
+                        con.print(&format!("{}: Not a directory\n", ascii(arg)))?
                     }
+                    Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e)))?,
                 }
-                _ => con.print("Invalid choice.\n")?,
+            }
+            "ls" => ls(con, root, &cwd, arg)?,
+            "get" if arg.is_empty() => con.print("Usage: get FILE\n")?,
+            "get" => get(con, root, &cwd, arg, protocol, options, log)?,
+            "protocol" if arg.is_empty() => {
+                con.print(&format!("Protocol: {}\n", protocol.name()))?
+            }
+            "protocol" => match Protocol::parse(arg) {
+                Some(choice) => {
+                    protocol = choice;
+                    con.print(&format!("Protocol set to {}.\n", protocol.name()))?
+                }
+                None => con.print(
+                    "Unknown protocol. Choose zmodem (z), xmodem (x) or xmodem-1k (x-1k).\n",
+                )?,
             },
+            _ => con.print("Unknown command. Type help for a list of commands.\n")?,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+/// `get FILE`, where the last part of FILE may hold `*` and `?` wildcards.
+fn get(
+    con: &mut Console,
+    root: &Root,
+    cwd: &Path,
+    arg: &str,
+    protocol: Protocol,
+    options: &Options,
+    log: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let path = target(cwd, arg);
+    let pattern = file_name(&path);
+    if !pattern.contains(['*', '?']) {
+        return match root.stat(&path) {
+            Ok(Kind::File { .. }) => transfer(con, root, &[path], protocol, options, log),
+            Ok(Kind::Dir) => con.print(&format!("{}: Is a directory\n", ascii(arg))),
+            Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
+        };
+    }
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let entries = match root.list(dir) {
+        Ok(entries) => entries,
+        Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
+    };
+    let files: Vec<PathBuf> = entries
+        .into_iter()
+        .filter(|e| matches!(e.kind, Kind::File { .. }) && wildcard(&pattern, &e.name))
+        .map(|e| dir.join(e.name))
+        .collect();
+    if files.is_empty() {
+        return con.print(&format!("{}: No match\n", ascii(arg)));
+    }
+    transfer(con, root, &files, protocol, options, log)
+}
+
+/// Match `name` against `pattern`, where `*` is any run of characters and
+/// `?` is any one character. Case is ignored, as DOS users expect.
+fn wildcard(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+    let name: Vec<char> = name.to_lowercase().chars().collect();
+    let (mut p, mut n) = (0, 0);
+    // Where to resume after the most recent `*`: (pattern, name) positions.
+    let mut star = None;
+    while n < name.len() {
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some((p + 1, n));
+                p += 1;
+            }
+            Some(&c) if c == '?' || c == name[n] => {
+                p += 1;
+                n += 1;
+            }
+            _ => match star {
+                Some((sp, sn)) => {
+                    star = Some((sp, sn + 1));
+                    p = sp;
+                    n = sn + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
+/// The last component of `path`, or empty for the top.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// `ls [-R] [PATH]`: one entry per line, directories marked with `/`.
+fn ls(con: &mut Console, root: &Root, cwd: &Path, arg: &str) -> io::Result<()> {
+    let (recursive, arg) = match arg.strip_prefix("-R") {
+        Some(rest) if rest.is_empty() || rest.starts_with(' ') => (true, rest.trim()),
+        _ => (false, arg),
+    };
+    let path = target(cwd, arg);
+    let mut lines = Vec::new();
+    match root.stat(&path) {
+        Ok(Kind::File { size }) => lines.push((arg.to_string(), Some(size))),
+        Ok(Kind::Dir) => {
+            let mut seen = HashSet::from_iter(root.resolve(&path).ok());
+            if let Err(e) = walk(root, &path, "", recursive, &mut seen, &mut lines) {
+                return con.print(&format!("{}: {}\n", ascii(arg), reason(&e)));
+            }
+        }
+        Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
+    }
+    let width = lines
+        .iter()
+        .filter(|(_, size)| size.is_some())
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0)
+        .min(NAME_COLUMN);
+    for (name, size) in lines {
+        if con.interrupted()? {
+            return con.print("^C\n");
+        }
+        con.print(&match size {
+            Some(size) => format!("{:<width$}  {:>6}\n", ascii(&name), human(size)),
+            None => format!("{}\n", ascii(&name)),
+        })?;
+    }
+    Ok(())
+}
+
+/// Collect the entries of `dir`, named with `prefix`; with `recursive`, each
+/// directory is followed by its contents. `seen` holds the real paths
+/// already listed, so symlink loops are listed once. Unreadable
+/// subdirectories are shown but not entered.
+fn walk(
+    root: &Root,
+    dir: &Path,
+    prefix: &str,
+    recursive: bool,
+    seen: &mut HashSet<PathBuf>,
+    lines: &mut Vec<(String, Option<u64>)>,
+) -> io::Result<()> {
+    for entry in root.list(dir)? {
+        let name = format!("{prefix}{}", entry.name);
+        match entry.kind {
+            Kind::File { size } => lines.push((name, Some(size))),
+            Kind::Dir => {
+                let name = format!("{name}/");
+                lines.push((name.clone(), None));
+                let sub = dir.join(&entry.name);
+                if recursive
+                    && let Ok(real) = root.resolve(&sub)
+                    && seen.insert(real)
+                {
+                    let _ = walk(root, &sub, &name, true, seen, lines);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Tab completion: a command name for the first word, otherwise the name
+/// being typed in the argument (directories only for `cd`).
+fn complete(root: &Root, cwd: &Path, line: &str) -> Completion {
+    let unchanged = || Completion {
+        line: line.to_string(),
+        choices: Vec::new(),
+    };
+    let Some((command, _)) = line.split_once(' ') else {
+        return complete_keyword("", line, COMMANDS);
+    };
+    let command = command.to_ascii_lowercase();
+    let mut start = command.len() + 1;
+    start += line[start..].len() - line[start..].trim_start().len();
+    if command == "protocol" {
+        let names = Protocol::ALL.map(Protocol::name);
+        return complete_keyword(&line[..start], &line[start..], &names);
+    }
+    if command == "ls" && line[start..].starts_with("-R ") {
+        start += 3;
+        start += line[start..].len() - line[start..].trim_start().len();
+    }
+    let word = &line[start..];
+    let (dir_part, prefix) = match word.rfind('/') {
+        Some(i) => word.split_at(i + 1),
+        None => ("", word),
+    };
+    let Ok(entries) = root.list(&target(cwd, dir_part)) else {
+        return unchanged();
+    };
+    let prefix = prefix.to_lowercase();
+    let matches: Vec<_> = entries
+        .into_iter()
+        .filter(|e| e.name.to_lowercase().starts_with(&prefix))
+        .filter(|e| command != "cd" || e.kind == Kind::Dir)
+        .filter(|e| e.name.bytes().all(|b| (0x20..=0x7e).contains(&b)))
+        .collect();
+    let head = &line[..start];
+    match &matches[..] {
+        [] => unchanged(),
+        [only] => Completion {
+            line: match only.kind {
+                Kind::Dir => format!("{head}{dir_part}{}/", only.name),
+                Kind::File { .. } => format!("{head}{dir_part}{} ", only.name),
+            },
+            choices: Vec::new(),
+        },
+        [first, rest @ ..] => {
+            let common = rest.iter().fold(first.name.len(), |n, e| {
+                first.name[..n]
+                    .bytes()
+                    .zip(e.name.bytes())
+                    .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+                    .count()
+            });
+            if common > prefix.len() {
+                Completion {
+                    line: format!("{head}{dir_part}{}", &first.name[..common]),
+                    choices: Vec::new(),
+                }
+            } else {
+                Completion {
+                    line: line.to_string(),
+                    choices: matches
+                        .iter()
+                        .map(|e| match e.kind {
+                            Kind::Dir => format!("{}/", e.name),
+                            Kind::File { .. } => e.name.clone(),
+                        })
+                        .collect(),
+                }
+            }
+        }
+    }
+}
+
+/// Complete `word`, which follows `head` on the line, from a fixed list.
+fn complete_keyword(head: &str, word: &str, keywords: &[&str]) -> Completion {
+    let lower = word.to_ascii_lowercase();
+    let names: Vec<&str> = keywords
+        .iter()
+        .copied()
+        .filter(|k| k.starts_with(&lower))
+        .collect();
+    let line = format!("{head}{word}");
+    match names[..] {
+        [] => Completion {
+            line,
+            choices: Vec::new(),
+        },
+        [name] => Completion {
+            line: format!("{head}{name} "),
+            choices: Vec::new(),
+        },
+        _ => Completion {
+            line,
+            choices: names.iter().map(|n| n.to_string()).collect(),
+        },
+    }
+}
+
+/// Resolve a typed path against `cwd` without touching the filesystem.
+/// A leading `/` starts at the top, and `..` stops there.
+fn target(cwd: &Path, arg: &str) -> PathBuf {
+    let mut path = if arg.starts_with('/') {
+        PathBuf::new()
+    } else {
+        cwd.to_path_buf()
+    };
+    for part in arg.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                path.pop();
+            }
+            _ => path.push(part),
+        }
+    }
+    path
+}
+
+/// A short error message for a path the user typed.
+fn reason(e: &io::Error) -> String {
+    match e.kind() {
+        io::ErrorKind::NotFound => "No such file or directory".into(),
+        io::ErrorKind::NotADirectory => "Not a directory".into(),
+        io::ErrorKind::PermissionDenied => "Permission denied".into(),
+        _ => e.to_string(),
+    }
+}
+
+/// A size such as `512B`, `1.5kB`, `12MB` (powers of 1024).
+fn human(size: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+    let mut value = size as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit > 0 && value.round() >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let number = if unit > 0 && value < 9.95 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.0}")
+    };
+    format!("{}{}", number.trim_end_matches(".0"), UNITS[unit])
+}
+
+/// Lay out `names` in columns across `width`, one row per line.
+fn columns(names: &[String], width: usize) -> String {
+    let cell = names.iter().map(String::len).max().unwrap_or(0) + 2;
+    let per_row = (width / cell).max(1);
+    let mut out = String::new();
+    for row in names.chunks(per_row) {
+        let cells: Vec<_> = row.iter().map(|n| format!("{n:<cell$}")).collect();
+        out.push_str(cells.concat().trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Protocol {
     Zmodem,
     Xmodem,
     Xmodem1k,
 }
 
-/// Offer `rel` for download. Transfer failures are reported to the user;
-/// only link I/O errors are returned.
+impl Protocol {
+    const ALL: [Protocol; 3] = [Protocol::Zmodem, Protocol::Xmodem, Protocol::Xmodem1k];
+
+    fn name(self) -> &'static str {
+        match self {
+            Protocol::Zmodem => "zmodem",
+            Protocol::Xmodem => "xmodem",
+            Protocol::Xmodem1k => "xmodem-1k",
+        }
+    }
+
+    /// A name as typed to `protocol`, in full or abbreviated (`z`, `x`, `x-1k`).
+    fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "z" | "zmodem" => Some(Protocol::Zmodem),
+            "x" | "xmodem" => Some(Protocol::Xmodem),
+            "x-1k" | "xmodem-1k" => Some(Protocol::Xmodem1k),
+            _ => None,
+        }
+    }
+}
+
+/// Send `files` in order by `protocol`. A failed transfer ends the batch,
+/// except a ZMODEM skip, which moves on to the next file. Transfer failures
+/// are reported to the user; only link I/O errors are returned.
 fn transfer(
+    con: &mut Console,
+    root: &Root,
+    files: &[PathBuf],
+    protocol: Protocol,
+    options: &Options,
+    log: &mut dyn FnMut(&str),
+) -> io::Result<()> {
+    let names: Vec<String> = files.iter().map(|f| file_name(f)).collect();
+    if names.len() > 1 {
+        con.print(&format!(
+            "Sending {} files by {}:\n{}",
+            names.len(),
+            protocol.name().to_ascii_uppercase(),
+            columns(&names, SCREEN_WIDTH)
+        ))?;
+    }
+    for (i, (rel, name)) in files.iter().zip(&names).enumerate() {
+        if files.len() > 1 {
+            con.print(&format!(
+                "\n({} of {}) {}\n",
+                i + 1,
+                files.len(),
+                ascii(name)
+            ))?;
+        }
+        if !send_file(con, root, rel, name, protocol, options, log)? && i + 1 < files.len() {
+            return con.print("Remaining files not sent.\n");
+        }
+    }
+    Ok(())
+}
+
+/// Send one file. Returns whether a batch should go on to the next file.
+fn send_file(
     con: &mut Console,
     root: &Root,
     rel: &Path,
     name: &str,
+    protocol: Protocol,
     options: &Options,
     log: &mut dyn FnMut(&str),
-) -> io::Result<()> {
-    con.print(&format!(
-        "\n{}\n  Z) ZMODEM (auto-download)\n  X) XMODEM\n  K) XMODEM-1K\n  C) Cancel\nProtocol [Z]: ",
-        display_name(name)
-    ))?;
-    let Some(choice) = con.read_line(options.idle_timeout)? else {
-        return Ok(());
-    };
-    let protocol = match choice.trim().to_ascii_uppercase().as_str() {
-        "" | "Z" => Protocol::Zmodem,
-        "X" => Protocol::Xmodem,
-        "K" => Protocol::Xmodem1k,
-        _ => return con.print("Cancelled.\n"),
-    };
+) -> io::Result<bool> {
     let contents = match root.read_file(rel) {
         Ok(contents) => contents,
         Err(e) => {
             log(&format!("cannot read {}: {e}", rel.display()));
-            return con.print(&format!("Cannot read file: {e}\n"));
+            con.print(&format!("Cannot read file: {e}\n"))?;
+            return Ok(false);
         }
     };
     let data = &contents.data;
@@ -302,15 +726,17 @@ fn transfer(
     match outcome {
         Ok(detail) => {
             log(&format!("sent {}: {detail}", rel.display()));
-            con.print(&format!("\nTransfer complete: {detail}.\n"))
+            con.print(&format!("\nTransfer complete: {detail}.\n"))?;
+            Ok(true)
         }
         Err(reason) => {
             log(&format!("transfer of {} failed: {reason}", rel.display()));
             con.print(&format!("\nTransfer failed: {reason}.\n"))?;
-            match hint {
-                Some(hint) => con.print(&wrap(hint, 78)),
-                None => Ok(()),
+            if let Some(hint) = hint {
+                con.print(&wrap(hint, 78))?;
             }
+            // A skipped file was declined; the rest may still be wanted.
+            Ok(hint.is_some())
         }
     }
 }
@@ -344,13 +770,12 @@ fn location(cwd: &Path) -> String {
     if out.is_empty() {
         out.push('/');
     }
-    display_name(&out)
+    ascii(&out)
 }
 
-/// Make a name safe for a plain ASCII terminal and fit it to the listing.
-fn display_name(name: &str) -> String {
-    let ascii: String = name
-        .chars()
+/// Make a name safe for a plain ASCII terminal.
+fn ascii(name: &str) -> String {
+    name.chars()
         .map(|c| {
             if c.is_ascii_graphic() || c == ' ' {
                 c
@@ -358,12 +783,7 @@ fn display_name(name: &str) -> String {
                 '?'
             }
         })
-        .collect();
-    if ascii.len() > NAME_WIDTH {
-        format!("{}~", &ascii[..NAME_WIDTH - 1])
-    } else {
-        ascii
-    }
+        .collect()
 }
 
 #[cfg(test)]
@@ -408,15 +828,21 @@ mod tests {
         }
     }
 
-    const PROMPT: &str = "Q)uit: ";
+    const PROMPT: &str = "> ";
 
-    /// root/{docs/readme.txt, data.bin (3000 bytes), small.txt}
+    /// root/{.hidden, data.bin (3000 bytes), docs/{readme.txt, .secret}, small.txt}
     fn start(options: Options) -> Client {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("docs")).unwrap();
         fs::write(tmp.path().join("docs/readme.txt"), b"hello").unwrap();
+        fs::write(tmp.path().join("docs/.secret"), b"secret").unwrap();
+        fs::write(tmp.path().join(".hidden"), b"hidden").unwrap();
         fs::write(tmp.path().join("data.bin"), data()).unwrap();
         fs::write(tmp.path().join("small.txt"), b"small").unwrap();
+        start_in(tmp, options)
+    }
+
+    fn start_in(tmp: tempfile::TempDir, options: Options) -> Client {
         let root = Root::new(tmp.path()).unwrap();
         let (mut server_end, client_end) = memory_pair();
         let server = thread::spawn(move || {
@@ -442,32 +868,173 @@ mod tests {
     }
 
     #[test]
-    fn browse_and_quit() {
+    fn ls_cd_pwd_and_quit() {
         let mut c = start(fast());
-        let screen = c.expect(PROMPT);
-        assert!(screen.contains("/   (page 1 of 1)"), "{screen}");
-        assert!(screen.contains("   1) docs/"), "{screen}");
-        assert!(screen.contains("   2) data.bin"), "{screen}");
-        assert!(screen.contains("3000\r\n"), "{screen}");
-        assert!(!screen.contains('\x1b'), "no ANSI sequences");
-        c.send("1\r\n");
-        let screen = c.expect(PROMPT);
-        assert!(screen.contains("/docs   (page 1 of 1)"), "{screen}");
-        assert!(screen.contains("1) readme.txt"), "{screen}");
-        c.send("u\r");
-        assert!(c.expect(PROMPT).contains("1) docs/"));
-        c.send("q\r");
+        c.expect("/> ");
+        c.send("ls\r\n");
+        let out = c.expect("/> ");
+        assert!(
+            out.contains("\r\ndata.bin    2.9kB\r\ndocs/\r\nsmall.txt      5B\r\n"),
+            "{out}"
+        );
+        assert!(!out.contains("hidden"), "{out}");
+        assert!(!out.contains('\x1b'), "no ANSI sequences");
+        c.send("cd docs\r");
+        c.expect("/docs> ");
+        c.send("ls\r");
+        let out = c.expect("/docs> ");
+        assert!(out.contains("\r\nreadme.txt      5B\r\n"), "{out}");
+        assert!(!out.contains("secret"), "{out}");
+        c.send("cd ..\rpwd\r");
+        c.expect("\r\n/\r\n/> ");
+        c.send("cd /docs/../docs\rCD\r");
+        c.expect("/docs> ");
+        c.expect("\r\n/> ");
+        c.send("ls docs\r");
+        c.expect("readme.txt      5B\r\n/> ");
+        c.send("quit\r");
         c.expect("Goodbye.");
         c.finish().unwrap();
     }
 
     #[test]
-    fn line_editing_and_invalid_input() {
+    fn ls_recursive() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send("9\x08\x089\r");
-        c.expect("Invalid choice.");
-        c.send("x\x7f\x01q\r");
+        c.send("ls -R\r");
+        let out = c.expect("\r\n/> ");
+        assert!(
+            out.contains(
+                "\r\ndata.bin          2.9kB\r\ndocs/\r\ndocs/readme.txt      5B\r\nsmall.txt            5B\r\n"
+            ),
+            "{out}"
+        );
+        c.send("cd docs\rls -R /\r");
+        c.expect("/docs> ");
+        let out = c.expect("\r\n/docs> ");
+        assert!(out.contains("docs/readme.txt"), "{out}");
+        c.send("bye\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn ls_recursive_survives_symlink_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("a")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("a/up")).unwrap();
+        let mut c = start_in(tmp, fast());
+        c.expect(PROMPT);
+        c.send("ls -R\r");
+        let out = c.expect("\r\n/> ");
+        assert!(out.contains("\r\na/\r\na/up/\r\n/> "), "{out}");
+        c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn ctrl_c_stops_listing_and_typeahead_is_kept() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("ls\r\x03");
+        let out = c.expect("\r\n/> ");
+        assert!(out.contains("ls\r\n^C\r\n"), "{out}");
+        c.send("ls\rpwd\r");
+        let out = c.expect("\r\n/\r\n/> ");
+        assert!(out.contains("small.txt"), "{out}");
+        c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn errors_are_reported() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("cd small.txt\r");
+        c.expect("small.txt: Not a directory");
+        c.send("get docs\r");
+        c.expect("docs: Is a directory");
+        c.send("get nope\r");
+        c.expect("nope: No such file or directory");
+        c.send("ls nope\r");
+        c.expect("nope: No such file or directory");
+        c.send("get\r");
+        c.expect("Usage: get FILE");
+        c.send("frob\r");
+        c.expect("Unknown command.");
+        c.send("cd /../..\rpwd\r");
+        c.expect("\r\n/\r\n");
+        c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn hidden_files_are_unreachable() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        for cmd in [
+            "get .hidden",
+            "get docs/.secret",
+            "ls .hidden",
+            "cd .hidden",
+        ] {
+            c.send(&format!("{cmd}\r"));
+            let out = c.expect("\r\n/> ");
+            assert!(out.contains("No such file or directory"), "{cmd}: {out}");
+        }
+        c.send("cd docs\rget .s\t");
+        let out = c.expect("get .s");
+        c.send("\r");
+        c.expect("No such file or directory");
+        assert!(
+            out.ends_with("\x07get .s") || !out.contains("secret"),
+            "{out}"
+        );
+        c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn tab_completion() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        // A unique command, then a unique file.
+        c.send("g\t");
+        c.expect("get ");
+        c.send("sm\t");
+        c.expect("all.txt ");
+        c.send(&"\x08".repeat("get small.txt ".len()));
+        // Protocol names complete too.
+        c.send("protocol xmodem-\t");
+        c.expect("1k ");
+        c.send("\r");
+        c.expect("Protocol set to xmodem-1k.");
+        // cd completes only directories; a directory gets a trailing slash.
+        c.send("cd d\t");
+        c.expect("ocs/");
+        c.send("\x08\x08\x08\x08\x08\x08\x08\x08");
+        // Ambiguous: list the choices and redraw the line.
+        c.send("ls d\t");
+        c.expect("\r\ndata.bin  docs/\r\n/> ls d");
+        // Case-insensitive, completing through a directory.
+        c.send("\x08docs/R\t");
+        c.expect("docs/R\x08 \x08readme.txt ");
+        c.send("\r");
+        c.expect("readme.txt      5B");
+        // No match rings the bell.
+        c.send("ls zz\t");
+        c.expect("\x07");
+        c.send("\x08\x08\x08\x08\x08quit\r");
+        c.expect("Goodbye.");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn line_editing() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("x\x7f\x01pwx\x08d\r");
+        c.expect("\r\n/\r\n");
+        c.send("quit\r");
         c.expect("Goodbye.");
         c.finish().unwrap();
     }
@@ -483,31 +1050,31 @@ mod tests {
     }
 
     #[test]
-    fn zmodem_download_returns_to_menu() {
+    fn zmodem_download_returns_to_prompt() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send("2\r");
-        c.expect("Protocol [Z]: ");
-        c.send("\r");
+        c.send("get data.bin\r");
         c.expect("five times to cancel.\r\n");
         let rx = zmodem::test_receiver::receive(&mut c.t, None);
         assert_eq!(rx.name, b"data.bin");
         assert_eq!(rx.data, data());
         c.expect("Transfer complete: 3000 bytes.");
         c.expect(PROMPT);
-        c.send("q\r");
+        c.send("cd docs\rget readme.txt\r");
+        c.expect("five times to cancel.\r\n");
+        let rx = zmodem::test_receiver::receive(&mut c.t, None);
+        assert_eq!(rx.name, b"readme.txt");
+        assert_eq!(rx.data, b"hello");
+        c.expect("/docs> ");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
     #[test]
-    fn late_zfin_is_not_menu_input() {
+    fn late_zfin_is_not_input() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send(
-            "2
-
-",
-        );
+        c.send("get data.bin\r");
         c.expect("five times to cancel.\r\n");
         zmodem::test_receiver::receive(&mut c.t, None);
         // As captured from HyperTerminal: a repeated ZFIN ~730 ms after "OO".
@@ -515,28 +1082,28 @@ mod tests {
         c.t.write_all(b"**\x18B0800000000022d\r\x8a").unwrap();
         let out = c.expect(PROMPT);
         assert!(out.contains("Transfer complete"), "{out}");
-        c.send("q\r");
+        c.send("quit\r");
         let out = c.expect("Goodbye.");
-        assert!(!out.contains("Invalid choice"), "{out}");
+        assert!(!out.contains("Unknown command"), "{out}");
         assert!(!out.contains("**B08"), "ZFIN echoed: {out}");
         c.finish().unwrap();
     }
 
     #[test]
-    fn zmodem_skip_explains_and_returns_to_menu() {
+    fn zmodem_skip_explains_and_returns_to_prompt() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send("2\rz\r");
+        c.send("get data.bin\r");
         c.expect("five times to cancel.\r\n");
         zmodem::test_receiver::skip(&mut c.t);
-        let out = c.expect(PROMPT);
+        let out = c.expect("\r\n/> ");
         assert!(
             out.contains("Transfer failed: receiver skipped the file."),
             "{out}"
         );
         assert!(out.contains("Receive File >"), "{out}");
         assert!(out.lines().all(|l| l.len() <= 80), "{out}");
-        c.send("q\r");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
@@ -547,29 +1114,29 @@ mod tests {
     }
 
     #[test]
-    fn zmodem_cancel_returns_to_menu() {
+    fn zmodem_cancel_returns_to_prompt() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send("2\rz\r");
+        c.send("get data.bin\r");
         c.expect("five times to cancel.\r\n");
         zmodem::test_receiver::receive(&mut c.t, Some(1));
         c.expect("Transfer failed: transfer cancelled by receiver.");
         c.expect(PROMPT);
-        c.send("q\r");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
     #[test]
-    fn xmodem_download_returns_to_menu() {
+    fn xmodem_download_returns_to_prompt() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send("2\rx\r");
+        c.send("protocol x\rget data.bin\r");
         c.expect("twice to cancel.\r\n");
         let rx = xmodem::tests::receive(&mut c.t, b'C', Default::default());
         assert_eq!(&rx.data[..3000], data());
         c.expect("padded to 3072; the original is exactly 3000 bytes.");
         c.expect(PROMPT);
-        c.send("q\r");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
@@ -580,21 +1147,34 @@ mod tests {
             ..fast()
         });
         c.expect(PROMPT);
-        c.send("3\rk\r");
+        c.send("protocol x-1k\rget small.txt\r");
         c.expect("Transfer failed: receiver did not start the transfer.");
         c.expect(PROMPT);
-        c.send("q\r");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
     #[test]
-    fn protocol_menu_cancel() {
+    fn protocol_shows_and_sets() {
         let mut c = start(fast());
         c.expect(PROMPT);
-        c.send("3\rc\r");
-        c.expect("Cancelled.");
-        c.expect(PROMPT);
-        c.send("q\r");
+        c.send("protocol\r");
+        c.expect("Protocol: zmodem\r\n");
+        for (typed, name) in [
+            ("x", "xmodem"),
+            ("X-1K", "xmodem-1k"),
+            ("zmodem", "zmodem"),
+            ("xmodem", "xmodem"),
+            ("xmodem-1k", "xmodem-1k"),
+            ("z", "zmodem"),
+        ] {
+            c.send(&format!("protocol {typed}\r"));
+            c.expect(&format!("Protocol set to {name}.\r\n"));
+        }
+        c.send("protocol kermit\rprotocol\r");
+        c.expect("Unknown protocol.");
+        c.expect("Protocol: zmodem\r\n");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
@@ -607,43 +1187,98 @@ mod tests {
     }
 
     #[test]
-    fn paging() {
+    fn get_wildcard_sends_each_match() {
         let tmp = tempfile::tempdir().unwrap();
-        for i in 0..20 {
-            fs::write(tmp.path().join(format!("f{i:02}")), b"").unwrap();
-        }
-        let root = Root::new(tmp.path()).unwrap();
-        let (mut server_end, client) = memory_pair();
-        let server = thread::spawn(move || {
-            session(
-                &mut Console::new(&mut server_end),
-                &root,
-                &fast(),
-                &mut |_| {},
-            )
-        });
-        let mut c = Client {
-            t: client,
-            _tmp: tmp,
-            server,
-        };
-        let screen = c.expect(PROMPT);
-        assert!(screen.contains("(page 1 of 2)") && screen.contains("16) f15"));
-        assert!(!screen.contains("17) f16"));
-        c.send("n\r");
-        let screen = c.expect(PROMPT);
-        assert!(screen.contains("(page 2 of 2)") && screen.contains("20) f19"));
-        c.send("n\r");
-        assert!(c.expect(PROMPT).contains("(page 2 of 2)"));
-        c.send("p\rq\r");
-        assert!(c.expect(PROMPT).contains("(page 1 of 2)"));
+        fs::create_dir(tmp.path().join("bin")).unwrap();
+        fs::write(tmp.path().join("bin/A.EXE"), b"a").unwrap();
+        fs::write(tmp.path().join("bin/b.exe"), b"bb").unwrap();
+        fs::write(tmp.path().join("bin/c.txt"), b"c").unwrap();
+        fs::write(tmp.path().join("bin/.d.exe"), b"d").unwrap();
+        fs::create_dir(tmp.path().join("bin/dir.exe")).unwrap();
+        let mut c = start_in(tmp, fast());
+        c.expect(PROMPT);
+        c.send("get bin/*.exe\r");
+        let out = c.expect("(1 of 2)");
+        assert!(
+            out.contains("Sending 2 files by ZMODEM:\r\nA.EXE  b.exe\r\n"),
+            "{out}"
+        );
+        let rx = zmodem::test_receiver::receive(&mut c.t, None);
+        assert_eq!((&rx.name[..], &rx.data[..]), (&b"A.EXE"[..], &b"a"[..]));
+        c.expect("(2 of 2) b.exe");
+        let rx = zmodem::test_receiver::receive(&mut c.t, None);
+        assert_eq!((&rx.name[..], &rx.data[..]), (&b"b.exe"[..], &b"bb"[..]));
+        c.expect("Transfer complete: 2 bytes.");
+        c.expect("\r\n/> ");
+        c.send("get *.zip\r");
+        c.expect("*.zip: No match");
+        c.send("quit\r");
         c.finish().unwrap();
     }
 
     #[test]
-    fn display_name_is_ascii_and_truncated() {
-        assert_eq!(display_name("caf\u{e9}"), "caf?");
-        let long = "x".repeat(60);
-        assert_eq!(display_name(&long).len(), NAME_WIDTH);
+    fn get_wildcard_stops_after_a_failure() {
+        let mut c = start(Options {
+            start_timeout: Duration::from_millis(200),
+            ..fast()
+        });
+        c.expect(PROMPT);
+        c.send("protocol x-1k\rget *.*\r");
+        c.expect("Transfer failed: receiver did not start the transfer.");
+        let out = c.expect("\r\n/> ");
+        assert!(out.contains("Remaining files not sent."), "{out}");
+        assert!(!out.contains("(2 of 2)"), "{out}");
+        c.send("quit\r");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn wildcard_matching() {
+        assert!(wildcard("*.exe", "GAME.EXE"));
+        assert!(wildcard("*", "x"));
+        assert!(wildcard("a?c*", "abcdef"));
+        assert!(wildcard("*a*b", "xaxxb"));
+        assert!(!wildcard("*.exe", "game.exe.txt"));
+        assert!(!wildcard("a?c", "ac"));
+    }
+
+    #[test]
+    fn human_sizes() {
+        let cases = [
+            (0, "0B"),
+            (1, "1B"),
+            (1023, "1023B"),
+            (1024, "1kB"),
+            (1536, "1.5kB"),
+            (10 * 1024, "10kB"),
+            (1024 * 1024 - 1, "1MB"),
+            (1474560, "1.4MB"),
+            (5 << 30, "5GB"),
+        ];
+        for (size, text) in cases {
+            assert_eq!(human(size), text, "{size}");
+        }
+    }
+
+    #[test]
+    fn target_resolves_typed_paths() {
+        let cwd = Path::new("a/b");
+        assert_eq!(target(cwd, ""), Path::new("a/b"));
+        assert_eq!(target(cwd, "c/./d/"), Path::new("a/b/c/d"));
+        assert_eq!(target(cwd, ".."), Path::new("a"));
+        assert_eq!(target(cwd, "../../../.."), Path::new(""));
+        assert_eq!(target(cwd, "/x"), Path::new("x"));
+    }
+
+    #[test]
+    fn columns_fit_width() {
+        let names: Vec<String> = ["aa", "bbbb", "c"].map(String::from).into();
+        assert_eq!(columns(&names, 80), "aa    bbbb  c\n");
+        assert_eq!(columns(&names, 12), "aa    bbbb\nc\n");
+    }
+
+    #[test]
+    fn ascii_replaces_non_ascii() {
+        assert_eq!(ascii("caf\u{e9}"), "caf?");
     }
 }

@@ -4,7 +4,8 @@
 //! Every path is resolved through the filesystem (following symlinks) and
 //! must stay inside the canonical root, so neither `..` components nor
 //! symlinks can reach files outside it. Symlinks that point within the root
-//! are allowed.
+//! are allowed. Hidden names (starting with `.`) are never reachable,
+//! whether named directly or reached through a symlink.
 //!
 //! The check and the subsequent read are not atomic: an attacker with write
 //! access to the tree on the host could swap in a symlink between them. The
@@ -54,19 +55,22 @@ impl Root {
     pub fn resolve(&self, rel: &Path) -> io::Result<PathBuf> {
         for component in rel.components() {
             match component {
+                Component::Normal(name) if is_hidden(name) => return Err(hidden(rel)),
                 Component::Normal(_) | Component::CurDir => {}
                 _ => return Err(outside(rel)),
             }
         }
         let full = self.path.join(rel).canonicalize()?;
-        if !full.starts_with(&self.path) {
+        let Ok(inner) = full.strip_prefix(&self.path) else {
             return Err(outside(rel));
+        };
+        if inner.iter().any(is_hidden) {
+            return Err(hidden(rel));
         }
         Ok(full)
     }
 
-    /// List the directory `rel`: directories first, then files, each sorted
-    /// case-insensitively. Hidden entries, non-UTF-8 names, special files,
+    /// List the directory `rel`, sorted alphabetically (ignoring case). Hidden entries, non-UTF-8 names, special files,
     /// and anything resolving outside the root are omitted.
     pub fn list(&self, rel: &Path) -> io::Result<Vec<Entry>> {
         let dir = self.resolve(rel)?;
@@ -76,9 +80,6 @@ impl Root {
             let Ok(name) = item.file_name().into_string() else {
                 continue;
             };
-            if name.starts_with('.') {
-                continue;
-            }
             let Ok(real) = self.resolve(&rel.join(&name)) else {
                 continue;
             };
@@ -94,8 +95,25 @@ impl Root {
             };
             entries.push(Entry { name, kind });
         }
-        entries.sort_by_key(|e| (e.kind != Kind::Dir, e.name.to_lowercase()));
+        entries.sort_by(|a, b| {
+            (a.name.to_lowercase(), &a.name).cmp(&(b.name.to_lowercase(), &b.name))
+        });
         Ok(entries)
+    }
+
+    /// Whether `rel` is a directory or a regular file (and its size).
+    pub fn stat(&self, rel: &Path) -> io::Result<Kind> {
+        let meta = fs::metadata(self.resolve(rel)?)?;
+        if meta.is_dir() {
+            Ok(Kind::Dir)
+        } else if meta.is_file() {
+            Ok(Kind::File { size: meta.len() })
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", rel.display()),
+            ))
+        }
     }
 
     /// Read the regular file `rel` and its modification time.
@@ -121,6 +139,17 @@ pub struct Contents {
     pub modified: Option<SystemTime>,
 }
 
+fn is_hidden(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b".")
+}
+
+fn hidden(rel: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("{} not found", rel.display()),
+    )
+}
+
 fn outside(rel: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -133,7 +162,8 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    /// root/{a.txt, B.TXT, sub/c.txt, .hidden, inside -> sub, escape -> outside/,
+    /// root/{a.txt, B.TXT, sub/c.txt, .hidden, .dot/d.txt, inside -> sub,
+    /// peek -> .hidden, peekdir -> .dot, escape -> outside/,
     /// escape.txt -> outside/secret.txt}
     fn fixture() -> (tempfile::TempDir, Root) {
         let tmp = tempfile::tempdir().unwrap();
@@ -144,6 +174,10 @@ mod tests {
         fs::write(base.join("root/a.txt"), b"aaa").unwrap();
         fs::write(base.join("root/B.TXT"), b"bb").unwrap();
         fs::write(base.join("root/.hidden"), b"h").unwrap();
+        fs::create_dir(base.join("root/.dot")).unwrap();
+        fs::write(base.join("root/.dot/d.txt"), b"d").unwrap();
+        symlink(base.join("root/.hidden"), base.join("root/peek")).unwrap();
+        symlink(base.join("root/.dot"), base.join("root/peekdir")).unwrap();
         fs::write(base.join("root/sub/c.txt"), b"c").unwrap();
         symlink(base.join("root/sub"), base.join("root/inside")).unwrap();
         symlink(base.join("outside"), base.join("root/escape")).unwrap();
@@ -165,7 +199,7 @@ mod tests {
             .into_iter()
             .map(|e| e.name)
             .collect();
-        assert_eq!(names, ["inside", "sub", "a.txt", "B.TXT"]);
+        assert_eq!(names, ["a.txt", "B.TXT", "inside", "sub"]);
         let sub = root.list(Path::new("sub")).unwrap();
         assert_eq!(
             sub,
@@ -211,6 +245,26 @@ mod tests {
             assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{rel}");
         }
         assert!(root.list(Path::new("escape")).is_err());
+    }
+
+    #[test]
+    fn hidden_is_refused() {
+        let (_tmp, root) = fixture();
+        for rel in [
+            ".hidden",
+            ".dot",
+            ".dot/d.txt",
+            "peek",
+            "peekdir/d.txt",
+            "sub/../.hidden",
+        ] {
+            assert!(
+                root.read_file(Path::new(rel)).is_err(),
+                "{rel} was readable"
+            );
+        }
+        assert!(root.list(Path::new(".dot")).is_err());
+        assert!(root.list(Path::new("peekdir")).is_err());
     }
 
     #[test]

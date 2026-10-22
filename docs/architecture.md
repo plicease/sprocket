@@ -24,7 +24,7 @@ Rust host CLI
   ├── transports: serial port / TCP (emulator) / in-memory (tests)
   ├── standard-protocol senders (XMODEM, XMODEM-1K, ZMODEM)
   ├── terminal file server (`sprocket serve`)
-  │     ├── plain-ASCII menu and line editing
+  │     ├── ftp-style commands, line editing and Tab completion
   │     └── root-confined, read-only file tree
   ├── native SPROCKET protocol engine (`native`)
   │     ├── framing and CRC-16 (`native::frame`)
@@ -46,12 +46,12 @@ Legacy protocol transfers and the terminal file server work with third-party ter
 
 ## Terminal file server
 
-`sprocket serve` turns the serial line into a small, keyboard-driven download menu. Its layers are kept separate so each can be reused or tested alone:
+`sprocket serve` turns the serial line into a small, ftp-style download prompt (`ls`, `cd`, `get`). Its layers are kept separate so each can be reused or tested alone:
 
 | Layer | Module | Responsibility |
 | --- | --- | --- |
 | Transport | `transport` | Byte stream with read timeouts; serial, TCP, or in-memory. Knows nothing about menus or protocols. |
-| Menu | `serve` | Banner, listing, paging, line editing, protocol choice, result messages. Output is plain ASCII with CR LF line endings and no ANSI sequences, and fits 80×24. |
+| Commands | `serve` | Banner, command parsing, listings, line editing, Tab completion, wildcards, protocol choice, result messages. Output is plain ASCII with CR LF line endings and no ANSI sequences. |
 | File tree | `files` | Lists and reads files beneath the configured root only. |
 | Transfer | `xmodem`, `zmodem` | Send one file over a `Transport`; report progress and typed errors. Shared with `sprocket send`. |
 

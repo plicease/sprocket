@@ -112,7 +112,7 @@ Run on 2026-10-21 with 86Box build 9001: machine `ibmxt86` (IBM XT, 1986 BIOS), 
 
 - XMODEM: checksum and CRC modes, 1K blocks and fallback, corrupted blocks (NAK and resend), lost ACKs (timeout, duplicate discarded), NAKed EOT, receiver cancel, no receiver, sequence wrap, empty file.
 - ZMODEM: exact length, filename and timestamp against the `zmodem2` receiver; corrupted data subpacket (ZRPOS recovery); receiver CAN cancel; no receiver; ZRQINIT repetition.
-- Menu: listing and navigation, paging, line editing, invalid input, idle timeout, protocol cancel, ZMODEM and XMODEM downloads returning to the menu, a cancelled ZMODEM returning to the menu, no-receiver errors, and disconnect.
+- Commands: `ls` (alphabetical, sizes, `-R`, symlink loops, Ctrl-C with typeahead kept), `cd`/`pwd` path handling, hidden files refused, Tab completion, `get` wildcards (batch order, stop after a failure), line editing, error messages, idle timeout, the `protocol` command, ZMODEM and XMODEM downloads returning to the prompt, a cancelled ZMODEM returning to the prompt, no-receiver errors, and disconnect.
 - File tree: `..`, absolute paths, and symlinks leading outside the root are refused; symlinks inside it are allowed; hidden and escaping entries are not listed.
 
 **Tier 0: interoperability (manual).** Run `sprocket` against lrzsz's `rz`/`rx` over a `socat` PTY pair. lrzsz is a test receiver only, never a SPROCKET dependency; it can be unpacked locally with `apt-get download lrzsz && dpkg-deb -x`, without installing it.
@@ -124,16 +124,18 @@ sprocket send --protocol zmodem --port /tmp/ptyA FILE
 cmp recv/FILE FILE        # exact bytes, name and mtime preserved
 ```
 
-For the menu, a script on `/tmp/ptyB` presses ENTER, selects a file, starts `rz` when it sees the ZRQINIT signature `**\x18B00` (simulating auto-download), and checks that the menu returns. For XMODEM it runs `rx`, and compares the received prefix and padded length.
+For `serve`, a script on `/tmp/ptyB` presses ENTER, types `get FILE`, starts `rz` when it sees the ZRQINIT signature `**\x18B00` (simulating auto-download), and checks that the prompt returns. For XMODEM it runs `rx`, and compares the received prefix and padded length.
 
 **Tier 1: DOSBox-X.** Run a DOS terminal program (e.g. Telix or Procomm Plus, obtained separately and not vendored) with COM1 as a transparent null-modem, and point `sprocket serve --port tcp://…` at it. Check:
 
-- Auto-download: with auto-ZMODEM enabled, choosing a file starts the download with no further keys. With it disabled, a manual ZMODEM receive works.
+- Auto-download: with auto-ZMODEM enabled, `get FILE` starts the download with no further keys. With it disabled, a manual ZMODEM receive works.
 - Fallback: XMODEM and XMODEM-1K via the terminal's manual receive; padding is reported correctly.
-- Cancellation from the terminal (Ctrl-X / abort key) during ZMODEM and XMODEM returns to the menu.
+- Cancellation from the terminal (Ctrl-X / abort key) during ZMODEM and XMODEM returns to the prompt.
+- Tab completion: the terminal sends Tab (0x09) rather than expanding it locally, and the backspace redraw looks right.
+- Wildcards: `get *.EXE` with auto-ZMODEM receives every match without further keys.
 - Interrupted transfers: kill the emulator or drop the link mid-transfer. The host must log the loss, reopen the port, and present a fresh banner; a partial file is never reported as complete.
 - Integrity: compare received files with the host originals byte-for-byte (ZMODEM) or after truncation to the reported length (XMODEM).
-- Path traversal: the menu offers no way to name paths, and listings omit escaping symlinks. The `files` unit tests cover direct traversal attempts.
+- Path traversal: typed paths are resolved lexically and cannot climb above the top; the `files` layer then refuses `..`, hidden names, and symlinks that escape the root or lead to hidden files. The `files` unit tests cover direct traversal attempts.
 
 **Tier 2/3.** Repeat auto-download and fallback on 86Box and on `smokey`/NuXT with real UARTs, at 9600 baud first, then higher rates. Windows 95 HyperTerminal on `smokey` has been verified to auto-download ZMODEM from `sprocket serve` at 38400 baud, with matching MD5 sums (2026-10-20). Its manual XMODEM and XMODEM-1K receives through the menu were also verified (MD5 match after truncation), with the menu returning after each. `sprocket send` over XMODEM to HyperTerminal also matched by MD5 after truncation, and a cancel in HyperTerminal mid-transfer was reported cleanly by the sender. Cancellation through the menu remains to be checked, and DOS-mode terminals still need testing.
 
