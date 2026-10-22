@@ -78,9 +78,20 @@ struct ServeArgs {
     #[arg(long, default_value_t = 60)]
     wait: u64,
 
+    /// Initial line editing mode for each session (history, Tab completion,
+    /// Ctrl-D logout); off suits terminals that send odd keystrokes
+    #[arg(long, value_enum, default_value_t = Switch::On)]
+    editing: Switch,
+
     /// Append a timestamped byte-level trace of the link to FILE
     #[arg(long, value_name = "FILE")]
     trace: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Switch {
+    On,
+    Off,
 }
 
 #[derive(Args)]
@@ -162,6 +173,7 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let options = serve::Options {
         idle_timeout: Duration::from_secs(args.idle),
         start_timeout: Duration::from_secs(args.wait),
+        editing: args.editing == Switch::On,
     };
     log(&format!(
         "serving {} on {} ({} 8N1, no flow control); press Ctrl-C to stop",

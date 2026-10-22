@@ -33,7 +33,7 @@ const SETTLE: Duration = Duration::from_millis(500);
 const ZMODEM_SETTLE: Duration = Duration::from_millis(1500);
 /// Command names offered by Tab completion.
 const COMMANDS: &[&str] = &[
-    "bye", "cd", "dir", "exit", "get", "help", "ls", "protocol", "pwd", "quit",
+    "bye", "cd", "dir", "exit", "get", "help", "ls", "protocol", "pwd", "quit", "set",
 ];
 const HELP: &str = "\
 Commands:
@@ -47,8 +47,11 @@ Commands:
                    xmodem (x) or xmodem-1k (x-1k); zmodem by default
   pwd              show the current directory
   quit             end the session (or Ctrl-D)
-Tab completes names. Up and Down (or Ctrl-P and Ctrl-N) recall earlier
-commands. Ctrl-C stops a long listing.
+  set editing on|off
+                   turn line editing on or off for this session
+With editing on, Tab completes names, Up and Down (or Ctrl-P and Ctrl-N)
+recall earlier commands, and Ctrl-D logs out. Turn it off if your terminal
+sends odd keystrokes. Ctrl-C stops a long listing.
 ";
 
 /// Server settings.
@@ -58,6 +61,9 @@ pub struct Options {
     pub idle_timeout: Duration,
     /// How long a transfer waits for the receiver to start.
     pub start_timeout: Duration,
+    /// Whether sessions start with line editing (history, Tab completion,
+    /// Ctrl-D logout) on; `set editing` changes it within a session.
+    pub editing: bool,
 }
 
 impl Default for Options {
@@ -65,6 +71,7 @@ impl Default for Options {
         Self {
             idle_timeout: Duration::from_secs(600),
             start_timeout: Duration::from_secs(60),
+            editing: true,
         }
     }
 }
@@ -142,15 +149,19 @@ impl<'a> Console<'a> {
         self.t.write_all(text.replace('\n', "\r\n").as_bytes())
     }
 
-    /// Read a line with echo and backspace editing. Tab calls `complete`, if
-    /// given with the prompt to redraw after listing choices. Up and Down
-    /// (or Ctrl-P and Ctrl-N) step through the history, and a non-empty line
-    /// is added to it. Ctrl-D on an empty line ends input, as in a shell.
+    /// Read a line with echo and backspace editing; a non-empty line is
+    /// added to the history. With `editor` (the prompt, to redraw after
+    /// listing choices, and a completer), Tab completes, Up and Down (or
+    /// Ctrl-P and Ctrl-N) step through the history, and Ctrl-D on an empty
+    /// line ends input, as in a shell. Without it, every other control byte,
+    /// including ESC, is ignored on its own, so no key sequence can leave
+    /// input waiting.
     fn read_line(
         &mut self,
         idle: Duration,
-        complete: Option<(&str, Completer)>,
+        editor: Option<(&str, Completer)>,
     ) -> io::Result<Input> {
+        let editing = editor.is_some();
         let mut line = String::new();
         // Position in the history; `history.len()` is the line being typed,
         // which is kept in `draft` while an older one is shown.
@@ -169,6 +180,7 @@ impl<'a> Console<'a> {
             // Cursor keys arrive as ESC [ A or ESC O A (Up), B (Down), and so
             // on; only Up and Down do anything.
             let key = match (escape, byte) {
+                _ if !editing => byte,
                 (Escape::None, 0x1b) => {
                     escape = Escape::Start;
                     continue;
@@ -204,12 +216,12 @@ impl<'a> Console<'a> {
                     }
                     return Ok(Input::Line(line));
                 }
-                0x04 if line.is_empty() => {
+                0x04 if editing && line.is_empty() => {
                     self.print("\n")?;
                     return Ok(Input::Eof);
                 }
                 // Ctrl-P: previous line; Ctrl-N: next line.
-                0x10 | 0x0e => {
+                0x10 | 0x0e if editing => {
                     let next = match key {
                         0x10 if recalled > 0 => recalled - 1,
                         0x0e if recalled < self.history.len() => recalled + 1,
@@ -235,7 +247,7 @@ impl<'a> Console<'a> {
                     }
                 }
                 b'\t' => {
-                    let Some((prompt, complete)) = complete else {
+                    let Some((prompt, complete)) = editor else {
                         continue;
                     };
                     let done = complete(&line);
@@ -300,13 +312,17 @@ fn session(
 ) -> io::Result<()> {
     let mut cwd = PathBuf::new();
     let mut protocol = Protocol::Zmodem;
+    let mut editing = options.editing;
     con.history.clear();
     con.print("\nType help for a list of commands.\n")?;
     loop {
         let prompt = format!("{}> ", location(&cwd));
         con.print(&prompt)?;
         let completer = |line: &str| complete(root, &cwd, line);
-        let input = match con.read_line(options.idle_timeout, Some((&prompt, &completer)))? {
+        let input = match con.read_line(
+            options.idle_timeout,
+            editing.then_some((prompt.as_str(), &completer as Completer)),
+        )? {
             Input::Line(line) => line,
             Input::Eof => {
                 con.print("Goodbye.\n")?;
@@ -359,6 +375,20 @@ fn session(
                     "Unknown protocol. Choose zmodem (z), xmodem (x) or xmodem-1k (x-1k).\n",
                 )?,
             },
+            "set" => {
+                let words = arg.to_ascii_lowercase();
+                match words.split_whitespace().collect::<Vec<_>>()[..] {
+                    [] | ["editing"] => {}
+                    ["editing", "on"] => editing = true,
+                    ["editing", "off"] => editing = false,
+                    _ => {
+                        con.print("Usage: set editing on|off\n")?;
+                        continue;
+                    }
+                }
+                let state = if editing { "on" } else { "off" };
+                con.print(&format!("Editing is {state}.\n"))?;
+            }
             _ => con.print("Unknown command. Type help for a list of commands.\n")?,
         }
     }
@@ -521,6 +551,16 @@ fn complete(root: &Root, cwd: &Path, line: &str) -> Completion {
     let command = command.to_ascii_lowercase();
     let mut start = command.len() + 1;
     start += line[start..].len() - line[start..].trim_start().len();
+    if command == "set" {
+        let rest = &line[start..];
+        return match rest.get(..8) {
+            Some(word) if word.eq_ignore_ascii_case("editing ") => {
+                let value = rest[8..].trim_start();
+                complete_keyword(&line[..line.len() - value.len()], value, &["off", "on"])
+            }
+            _ => complete_keyword(&line[..start], rest, &["editing"]),
+        };
+    }
     if command == "protocol" {
         let names = Protocol::ALL.map(Protocol::name);
         return complete_keyword(&line[..start], &line[start..], &names);
@@ -969,6 +1009,7 @@ mod tests {
         Options {
             idle_timeout: Duration::from_secs(5),
             start_timeout: Duration::from_secs(2),
+            editing: true,
         }
     }
 
@@ -1264,6 +1305,69 @@ mod tests {
     }
 
     #[test]
+    fn editing_off_at_startup_is_basic_input() {
+        let mut c = start(Options {
+            editing: false,
+            ..fast()
+        });
+        c.expect(PROMPT);
+        c.send("cd docs\r");
+        c.expect("/docs> ");
+        // Tab, Ctrl-P, Ctrl-N and Ctrl-D are ignored, and ESC is dropped
+        // alone rather than starting a sequence that swallows what follows.
+        c.send("pw\t\x10\x0e\x04\x1bd\r");
+        let out = c.expect("/docs> ");
+        assert_eq!(out, "pwd\r\n/docs\r\n/docs> ");
+        c.send("\x04\x1b[A\r");
+        let out = c.expect("/docs> ");
+        assert_eq!(
+            out,
+            "[A\r\nUnknown command. Type help for a list of commands.\r\n/docs> "
+        );
+        // Backspace still edits.
+        c.send("pwx\x08d\r");
+        c.expect("/docs\r\n/docs> ");
+        // set editing works in basic mode, and the change is immediate.
+        c.send("set editing on\r");
+        c.expect("Editing is on.\r\n/docs> ");
+        c.send("\x1b[A");
+        c.expect("set editing on");
+        c.send(&"\x08".repeat("set editing on".len()));
+        c.send("\x04");
+        c.expect("Goodbye.");
+        c.finish().unwrap();
+    }
+
+    #[test]
+    fn set_editing_switches_modes() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send("set\r");
+        c.expect("Editing is on.\r\n/> ");
+        c.send("set e\t");
+        c.expect("diting ");
+        c.send("o\t");
+        c.expect("\r\noff  on\r\n/> set editing o");
+        c.send("ff\r");
+        c.expect("Editing is off.\r\n/> ");
+        c.send("set editing\r");
+        c.expect("Editing is off.\r\n/> ");
+        c.send("\x04ls d\t\r");
+        let out = c.expect("/> ");
+        assert!(
+            out.contains("ls d\r\nd: No such file or directory"),
+            "{out}"
+        );
+        c.send("SET EDITING ON\r");
+        c.expect("Editing is on.\r\n/> ");
+        c.send("set editing maybe\r");
+        c.expect("Usage: set editing on|off\r\n/> ");
+        c.send("\x04");
+        c.expect("Goodbye.");
+        c.finish().unwrap();
+    }
+
+    #[test]
     fn idle_timeout_ends_session() {
         let mut c = start(Options {
             idle_timeout: Duration::from_millis(200),
@@ -1342,7 +1446,7 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
-        assert_eq!(names.len(), 8, "{names:?}");
+        assert_eq!(names.len(), 9, "{names:?}");
     }
 
     #[test]
