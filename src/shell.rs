@@ -30,7 +30,6 @@ pub enum Mode {
     /// A terminal program on the serial line; downloads by XMODEM or ZMODEM.
     Terminal,
     /// The native client, with a local side as well as the remote one.
-    #[allow(dead_code)] // until the native client uses it
     Native,
 }
 
@@ -458,7 +457,6 @@ pub enum Argument {
     /// A name in the remote (or served) tree.
     Remote { dirs_only: bool },
     /// A name in the local tree (native mode).
-    #[allow(dead_code)] // until the native client uses it
     Local { dirs_only: bool },
     /// One of a fixed list of words.
     Words(&'static [&'static str]),

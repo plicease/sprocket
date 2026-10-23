@@ -209,8 +209,16 @@ impl<'a> Console<'a> {
 
     /// Whether the user pressed Ctrl-C or Ctrl-X. Other keys are kept as
     /// typeahead for the next prompt.
+    /// The end of input is not an interruption: the next read reports it,
+    /// after any typeahead.
     pub fn interrupted(&mut self) -> io::Result<bool> {
-        while let Some(byte) = self.t.read_byte(Duration::ZERO)? {
+        loop {
+            let byte = match self.t.read_byte(Duration::ZERO) {
+                Ok(Some(byte)) => byte,
+                Ok(None) => break,
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            };
             if matches!(byte, 0x03 | 0x18) {
                 self.typeahead.clear();
                 return Ok(true);

@@ -236,7 +236,19 @@ impl<'a> Server<'a> {
             }
             tree::STAT => self.stat(p).map(|payload| (kind, payload)),
             tree::DIR_LIST => self.dir_list(p).map(|payload| (kind, payload)),
-            tree::FILE_READ => self.read(p).map(|payload| (kind, payload)),
+            tree::FILE_READ => {
+                let payload = self.read(p)?;
+                // Log each file once, at its first part.
+                if p.len() >= 4 && p[..4] == [0, 0, 0, 0] {
+                    let size = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    let path = String::from_utf8_lossy(p.get(7..).unwrap_or_default());
+                    log(&format!(
+                        "sending /{} ({size} bytes)",
+                        path.trim_start_matches('/')
+                    ));
+                }
+                Ok((kind, payload))
+            }
             tree::FILE_BEGIN => self.begin(p).map(|payload| (kind, payload)),
             tree::FILE_DATA => self.data(p).map(|()| (kind, Vec::new())),
             tree::FILE_COMMIT => self.commit(p, log).map(|payload| (kind, payload)),

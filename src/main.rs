@@ -27,8 +27,34 @@ enum Command {
     /// Serve a directory to a SPROCKET client (native mode, the default) or
     /// to a terminal program (--mode terminal)
     Serve(ServeArgs),
+    /// Connect to a SPROCKET server and browse it with ftp-style commands:
+    /// get, put, ls, cd, and lls, lcd for this machine
+    Client(ClientArgs),
     /// Connect to a SPROCKET client, show what it supports, and ping it
     Hello(HelloArgs),
+}
+
+#[derive(Args)]
+struct ClientArgs {
+    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
+    #[arg(long)]
+    port: String,
+
+    /// Baud rate (serial devices only); the line is always 8N1, no flow control
+    #[arg(long, default_value_t = 9600)]
+    baud: u32,
+
+    /// Seconds to keep calling the server before giving up
+    #[arg(long, default_value_t = 60)]
+    wait: u64,
+
+    /// Initial line editing mode (history, Tab completion, Ctrl-D to quit)
+    #[arg(long, value_enum, default_value_t = Switch::On)]
+    editing: Switch,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -149,6 +175,7 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Send(args) => send(args),
         Command::Serve(args) => serve(args),
+        Command::Client(args) => client(args),
         Command::Hello(args) => hello(args),
     }
 }
@@ -230,6 +257,46 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         std::thread::sleep(Duration::from_secs(5));
     }
+}
+
+fn client(args: ClientArgs) -> anyhow::Result<()> {
+    let trace = open_trace(args.trace.as_ref(), "client")?;
+    let mut link = open_link(&args.port, args.baud, trace.as_ref())
+        .with_context(|| format!("cannot open {}", args.port))?;
+    let note = |msg: &str| {
+        if let Some(trace) = &trace {
+            trace.note(msg);
+        }
+    };
+    let options = session::Options {
+        baud: args.baud,
+        wait: Duration::from_secs(args.wait),
+        ..session::Options::default()
+    };
+    eprintln!(
+        "calling the server on {}; waiting up to {}s",
+        args.port, args.wait
+    );
+    let observer = |event: &native::link::Event| {
+        if let native::link::Event::Retransmit { seq, attempt } = event
+            && *seq != 0
+        {
+            note(&format!("retransmitting request {seq} (attempt {attempt})"));
+        }
+    };
+    let session = session::Session::connect(link.as_mut(), &options, observer)
+        .context("cannot start a session")?;
+    let local = std::env::current_dir().context("cannot find the current directory")?;
+    let options = sprocket::client::Options {
+        editing: args.editing == Switch::On,
+    };
+    let mut terminal = sprocket::terminal::Terminal::new().context("cannot set up the terminal")?;
+    let result = sprocket::client::run(&mut terminal, session, &local, &options);
+    drop(terminal);
+    if let Err(e) = &result {
+        note(&format!("{e:#}"));
+    }
+    result
 }
 
 fn hello(args: HelloArgs) -> anyhow::Result<()> {
