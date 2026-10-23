@@ -18,6 +18,7 @@ HOST_CFLAGS := -std=c99 -Wall -Wextra -pedantic -Werror -O2
 
 VECTORS := ../../tests/vectors
 CORE := src/frame.c src/proto.c
+TREE := src/tree.c src/crc32.c
 HEADERS := $(wildcard src/*.h)
 
 all: build/SPROCKET.EXE
@@ -32,9 +33,11 @@ build:
 # version that also counted the frame check).
 DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we
 
-build/SPROCKET.EXE: $(CORE) src/dosport.c src/main.c $(HEADERS) | build
-	cd build && $(WCL) $(DOS_CFLAGS) -fe=SPROCKET.EXE \
-		$(addprefix ../,$(CORE) src/dosport.c src/main.c)
+DOS_SRC := $(CORE) $(TREE) src/dosfs.c src/dosport.c src/main.c
+HOST_SRC := $(CORE) $(TREE) src/posixfs.c src/posixport.c src/main.c
+
+build/SPROCKET.EXE: $(DOS_SRC) $(HEADERS) | build
+	cd build && $(WCL) $(DOS_CFLAGS) -fe=SPROCKET.EXE $(addprefix ../,$(DOS_SRC))
 
 build/BENCH.EXE: $(CORE) src/dosport.c test/bench.c $(HEADERS) | build
 	cd build && $(WCL) $(DOS_CFLAGS) -fe=BENCH.EXE \
@@ -48,14 +51,18 @@ build/test_frame: test/test_frame.c test/vectors.c src/frame.c $(HEADERS) | buil
 build/test_proto: test/test_proto.c test/vectors.c $(CORE) $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_proto.c test/vectors.c $(CORE)
 
-build/sprocket-client: $(CORE) src/posixport.c src/main.c $(HEADERS) | build
-	$(CC) $(HOST_CFLAGS) -o $@ $(CORE) src/posixport.c src/main.c
+build/test_tree: test/test_tree.c test/vectors.c $(CORE) $(TREE) src/posixfs.c $(HEADERS) | build
+	$(CC) $(HOST_CFLAGS) -o $@ test/test_tree.c test/vectors.c $(CORE) $(TREE) src/posixfs.c
+
+build/sprocket-client: $(HOST_SRC) $(HEADERS) | build
+	$(CC) $(HOST_CFLAGS) -o $@ $(HOST_SRC)
 
 host: build/sprocket-client
 
-test: build/test_frame build/test_proto
+test: build/test_frame build/test_proto build/test_tree
 	build/test_frame $(VECTORS)
 	build/test_proto $(VECTORS)
+	build/test_tree $(VECTORS)
 
 clean:
 	rm -rf build
