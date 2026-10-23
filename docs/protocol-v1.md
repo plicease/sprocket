@@ -2,6 +2,8 @@
 
 **Status:** Ratified on 2026-10-21 following review in [PR #1](https://github.com/plicease/sprocket/pull/1). This document defines the v1 wire format and behavior for implementation. Changes to ratified wire semantics require explicit versioning under [section 3](#3-hello-and-versioning). The higher-level requirements in `protocol.md` remain applicable.
 
+**Minor version 1** (directory trees, reading files, and either machine as requester) is proposed in [protocol v1.1](protocol-v1.1.md).
+
 **Revised after the first review:** duplicate handling now distinguishes requests in progress from completed ones and checks type and payload ([section 2](#duplicate-requests)); an interrupted `FILE_COMMIT` has a stated guarantee and recovery procedure ([section 5](#what-an-interrupted-commit-leaves-behind)); the session ID is 16 bits with stated limits on its uniqueness; host timeouts are configurable, and exhausting retries while the client is busy has defined results ([section 2](#exhausted-retries-while-the-client-is-busy)); rereads of marginal media are allowed ([section 6](#rereads)); and minor-version extensions follow explicit rules ([section 3](#extension-rules)).
 
 ## Design premises

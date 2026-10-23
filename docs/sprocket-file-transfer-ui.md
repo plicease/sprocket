@@ -47,7 +47,7 @@ Linux client: sprocket client --port /dev/ttyS0 --baud 38400
 
 The DOS program is one `.EXE` with subcommands. Both roles share the serial, framing, CRC and file code, so one program is smaller than two, and bootstrap sends a single file. With no subcommand it prints its usage. `SPROCKET SERVER` also answers `HELLO` and `PING`, so `sprocket hello` works against it.
 
-The existing native v1 host-driven session assumption will need to be generalized for role reversal while retaining its framing, CRC, sequencing, retransmission, and duplicate handling.
+The existing native v1 host-driven session assumption will need to be generalized for role reversal while retaining its framing, CRC, sequencing, retransmission, and duplicate handling. [Protocol v1.1](protocol-v1.1.md) (proposed) does this, and adds the directory, stat and read requests.
 
 ## Shared commands
 
@@ -118,7 +118,7 @@ There are **no `mget` or `mput` commands**. `get` and `put` accept either a file
 /> put GAMES/*.DAT
 ```
 
-- Expand wildcards on the **source side**: server for `get`, interactive client for `put`.
+- Expand wildcards on the **source side**: server for `get`, interactive client for `put`. For native `get` the client matches against the server's listing, which keeps a DOS server small and gives the same result ([protocol v1.1](protocol-v1.1.md#7-the-shells-requests)).
 - Match case-insensitively for DOS-compatible behavior; handle case-ambiguous names safely.
 - Report no matches explicitly.
 - Transfer multiple matches in a predictable order, preferably directory-listing order.
