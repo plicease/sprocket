@@ -17,6 +17,7 @@ CC ?= cc
 HOST_CFLAGS := -std=c99 -Wall -Wextra -pedantic -Werror -O2
 
 VECTORS := ../../tests/vectors
+SHELL_FIXTURES := ../../tests/shell
 CORE := src/frame.c src/proto.c
 TREE := src/tree.c src/crc32.c
 HEADERS := $(wildcard src/*.h)
@@ -54,15 +55,19 @@ build/test_proto: test/test_proto.c test/vectors.c $(CORE) $(HEADERS) | build
 build/test_tree: test/test_tree.c test/vectors.c $(CORE) $(TREE) src/posixfs.c $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_tree.c test/vectors.c $(CORE) $(TREE) src/posixfs.c
 
+build/test_shell: test/test_shell.c test/vectors.c src/shell.c $(HEADERS) | build
+	$(CC) $(HOST_CFLAGS) -o $@ test/test_shell.c test/vectors.c src/shell.c
+
 build/sprocket-client: $(HOST_SRC) $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ $(HOST_SRC)
 
 host: build/sprocket-client
 
-test: build/test_frame build/test_proto build/test_tree
+test: build/test_frame build/test_proto build/test_tree build/test_shell
 	build/test_frame $(VECTORS)
 	build/test_proto $(VECTORS)
 	build/test_tree $(VECTORS)
+	build/test_shell $(SHELL_FIXTURES)
 
 clean:
 	rm -rf build

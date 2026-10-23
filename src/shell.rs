@@ -838,6 +838,19 @@ mod tests {
         assert!(cases > 10);
     }
 
+    /// `tests/shell/help-native.txt`: the native help, which the DOS
+    /// client checks its own against.
+    #[test]
+    fn help_fixture() {
+        let text = std::fs::read_to_string("tests/shell/help-native.txt").unwrap();
+        let expected: String = text
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(help(Mode::Native, ""), expected);
+    }
+
     /// `tests/shell/listing.txt`: entries and the listing they give.
     #[test]
     fn listing_fixture() {
