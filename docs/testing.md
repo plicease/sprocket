@@ -131,7 +131,15 @@ Each ping's time is the two frames on the wire (about 2080 bytes) plus the clien
 
 ### Real hardware: P75 (`smokey`)
 
-Reported on 2026-10-23: `sprocket hello --pings 20` on `twintwist` to `SPROCKET.EXE` on `smokey`, a ThinkPad 755CX (Pentium 75), passed at every rate from 9600 to 115200 baud. The figures were not recorded. The corrected `BENCH.EXE` has not been run there yet (issue #9).
+Run on 2026-10-22: `smokey`, an IBM ThinkPad 755CX (Pentium 75), running DOS. Linked to `twintwist` (`/dev/ttyS0`) by a null-modem cable. Each run was `sprocket hello --baud <rate> --port /dev/ttyS0 --trace trace.log`: `HELLO`, three 1024-byte pings and `CLOSE`.
+
+| Baud | Result | Time per ping (1 KB each way) |
+| --- | --- | --- |
+| 9600 | clean | 2.173 s |
+| 38400 | clean | 0.554 s |
+| 115200 | clean | 0.200–0.202 s |
+
+Each run negotiated protocol 1.0 with client 0.1.0 (DOS/x86), a 1024-byte maximum payload and no capabilities, and closed normally. Each ping time is close to the wire time for two 1 KB frames. 19200 and 57600 were not run. The corrected `BENCH.EXE` has not been run there yet (issue #9).
 
 ## First end-to-end emulator milestone
 
