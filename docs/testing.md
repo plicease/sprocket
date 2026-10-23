@@ -129,6 +129,10 @@ Each ping's time is the two frames on the wire (about 2080 bytes) plus the clien
 
 **What this changed.** The first `BENCH` timed whole frames and spread each frame's CRC check over every byte, reporting 282 µs per byte at 4.77 MHz (139 µs at 9.54 MHz) and predicting failure at 38400. The 38400 run at 4.77 MHz was clean, and the 57600 run failed, which put the real cost between 173 and 260 µs. The check runs at the closing flag, after the last byte, so it never competes with incoming bytes. `BENCH` now times it separately and leaves it out of the per-byte figure (187.4 + 104.3 ms ÷ 1040 bytes ≈ 288 µs, matching the old figure within timer resolution). It also repeats each test for at least two seconds, so fast machines get a figure: on `smokey` (P75) the old version finished within one timer tick and reported nothing.
 
+### Real hardware: P75 (`smokey`)
+
+Reported on 2026-10-23: `sprocket hello --pings 20` on `twintwist` to `SPROCKET.EXE` on `smokey`, a ThinkPad 755CX (Pentium 75), passed at every rate from 9600 to 115200 baud. The figures were not recorded. The corrected `BENCH.EXE` has not been run there yet (issue #9).
+
 ## First end-to-end emulator milestone
 
 **Acceptance:** DOSBox-X boots a DOS environment, runs the Open Watcom-built `SPROCKET.EXE`, exchanges a version/capability handshake with the Rust host over the emulated COM1 link, and completes a small verified file transfer. Follow with a repeat under 86Box configured as an 8088-class PC.
