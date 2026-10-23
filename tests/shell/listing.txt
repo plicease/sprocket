@@ -1,0 +1,68 @@
+# sprocket shell listings: the entries a client has, in the order shown,
+# and the text `ls` (or `lls`) prints for them. Shared by the Rust and DOS
+# implementations, so every client formats listings the same way.
+#
+# Each case starts with "case: NAME", then one line per entry:
+#   f SIZE NAME   a file, NAME to the end of the line
+#   d NAME/       a directory, with its trailing slash
+# then "=", the expected output lines, and "end".
+#
+# File names are padded to the longest file name (directories do not
+# count), up to 40 columns; then two spaces and the size right-aligned in
+# six columns. Directories have no size.
+
+case: flat
+f 3000 data.bin
+d docs/
+f 5 small.txt
+=
+data.bin    2.9kB
+docs/
+small.txt      5B
+end
+
+case: recursive
+f 3000 data.bin
+d docs/
+f 5 docs/readme.txt
+f 5 small.txt
+=
+data.bin          2.9kB
+docs/
+docs/readme.txt      5B
+small.txt            5B
+end
+
+case: directories only
+d games/
+d tools/
+=
+games/
+tools/
+end
+
+case: one file
+f 1474560 DISK1.IMG
+=
+DISK1.IMG   1.4MB
+end
+
+case: long names
+f 1 a-file-name-that-is-longer-than-forty-columns.txt
+f 1024 short
+=
+a-file-name-that-is-longer-than-forty-columns.txt      1B
+short                                        1kB
+end
+
+case: dos names
+f 13824 COMMAND.COM
+d DOS/
+f 512 AUTOEXEC.BAT
+f 4294967295 BIG.DAT
+=
+COMMAND.COM     14kB
+DOS/
+AUTOEXEC.BAT    512B
+BIG.DAT          4GB
+end

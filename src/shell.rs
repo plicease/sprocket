@@ -623,25 +623,41 @@ pub fn reason(e: &io::Error) -> String {
     }
 }
 
-/// A size such as `512B`, `1.5kB`, `12MB` (powers of 1024).
+/// A size such as `512B`, `1.5kB`, `12MB` (powers of 1024): one decimal
+/// below 9.95, otherwise a whole number, each rounded half to even. Done
+/// in integers so that clients without floating point can match it
+/// exactly (`tests/shell/human.txt`).
 pub fn human(size: u64) -> String {
     const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut value = size as f64;
+    let size = u128::from(size);
     let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
+    let mut divisor: u128 = 1;
+    while size >= 1024 * divisor && unit < UNITS.len() - 1 {
+        divisor *= 1024;
         unit += 1;
     }
-    if unit > 0 && value.round() >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
+    // A value that would round to 1024 is shown in the next unit up.
+    if unit > 0 && 2 * size >= 2047 * divisor && unit < UNITS.len() - 1 {
+        divisor *= 1024;
         unit += 1;
     }
-    let number = if unit > 0 && value < 9.95 {
-        format!("{value:.1}")
+    if unit > 0 && 20 * size < 199 * divisor {
+        let tenths = round_half_even(10 * size, divisor);
+        if !tenths.is_multiple_of(10) {
+            return format!("{}.{}{}", tenths / 10, tenths % 10, UNITS[unit]);
+        }
+        return format!("{}{}", tenths / 10, UNITS[unit]);
+    }
+    format!("{}{}", round_half_even(size, divisor), UNITS[unit])
+}
+
+fn round_half_even(n: u128, d: u128) -> u128 {
+    let (q, r) = (n / d, n % d);
+    if 2 * r > d || (2 * r == d && q % 2 == 1) {
+        q + 1
     } else {
-        format!("{value:.0}")
-    };
-    format!("{}{}", number.trim_end_matches(".0"), UNITS[unit])
+        q
+    }
 }
 
 /// A directory as shown to the user, e.g. `/games/infocom`.
@@ -769,6 +785,85 @@ mod tests {
         for (size, text) in cases {
             assert_eq!(human(size), text, "{size}");
         }
+    }
+
+    /// The float formatting `human` used to do, which it must still match.
+    fn human_float(size: u64) -> String {
+        const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+        let mut value = size as f64;
+        let mut unit = 0;
+        while value >= 1024.0 && unit < UNITS.len() - 1 {
+            value /= 1024.0;
+            unit += 1;
+        }
+        if unit > 0 && value.round() >= 1024.0 && unit < UNITS.len() - 1 {
+            value /= 1024.0;
+            unit += 1;
+        }
+        let number = if unit > 0 && value < 9.95 {
+            format!("{value:.1}")
+        } else {
+            format!("{value:.0}")
+        };
+        format!("{}{}", number.trim_end_matches(".0"), UNITS[unit])
+    }
+
+    #[test]
+    fn human_matches_float_formatting() {
+        let mut sizes: Vec<u64> = (0..200_000).collect();
+        for shift in [10, 20, 30, 40] {
+            for k in 0..20_000u64 {
+                sizes.push((k << shift) / 20);
+                sizes.push(((k << shift) / 20).saturating_sub(1));
+                sizes.push((k << (shift - 10)) * 1023);
+            }
+        }
+        sizes.extend([u64::MAX, u64::MAX / 3, 1 << 50, 1 << 63]);
+        for size in sizes {
+            assert_eq!(human(size), human_float(size), "{size}");
+        }
+    }
+
+    /// `tests/shell/human.txt`: one size and its text per line.
+    #[test]
+    fn human_fixture() {
+        let text = std::fs::read_to_string("tests/shell/human.txt").unwrap();
+        let mut cases = 0;
+        for line in text
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
+            let (size, expected) = line.split_once(' ').unwrap();
+            assert_eq!(human(size.parse().unwrap()), expected, "{line}");
+            cases += 1;
+        }
+        assert!(cases > 10);
+    }
+
+    /// `tests/shell/listing.txt`: entries and the listing they give.
+    #[test]
+    fn listing_fixture() {
+        let text = std::fs::read_to_string("tests/shell/listing.txt").unwrap();
+        let mut cases = 0;
+        for case in text.split("\ncase: ").skip(1) {
+            let (name, rest) = case.split_once('\n').unwrap();
+            let (input, rest) = rest.split_once("=\n").unwrap();
+            let expected = &rest[..rest.find("end\n").unwrap()];
+            let lines: Vec<(String, Option<u64>)> = input
+                .lines()
+                .map(|l| match l.split_once(' ').unwrap() {
+                    ("d", name) => (name.to_string(), None),
+                    ("f", rest) => {
+                        let (size, name) = rest.split_once(' ').unwrap();
+                        (name.to_string(), Some(size.parse().unwrap()))
+                    }
+                    _ => panic!("bad line {l:?}"),
+                })
+                .collect();
+            assert_eq!(listing(&lines), expected, "case {name}");
+            cases += 1;
+        }
+        assert!(cases >= 4);
     }
 
     #[test]
