@@ -7,18 +7,16 @@
 //! or XMODEM. Output is plain ASCII with CR LF line endings and no ANSI
 //! sequences. Tab completes command and file names.
 
-use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::console::{Completer, Completion, Console, Input, SCREEN_WIDTH, columns};
+use crate::console::{Completer, Console, Input, SCREEN_WIDTH, columns};
 use crate::files::{Kind, Root};
+use crate::shell::{self, Argument, Mode, Tree, ascii, file_name, location, reason, target};
 use crate::transport::Transport;
 use crate::{xmodem, zmodem};
 
-/// Names longer than this push their size out of the listing's column.
-const NAME_COLUMN: usize = 40;
 /// How long to wait for a key at the "press ENTER" banner before checking again.
 const BANNER_WAIT: Duration = Duration::from_secs(3600);
 /// Quiet period used to discard protocol leftovers after a transfer.
@@ -26,24 +24,8 @@ const SETTLE: Duration = Duration::from_millis(500);
 /// Quiet period after ZMODEM. Windows 95 HyperTerminal repeats its ZFIN about
 /// 730 ms after the session ends; a shorter wait lets it reach the prompt as input.
 const ZMODEM_SETTLE: Duration = Duration::from_millis(1500);
-/// Command names offered by Tab completion.
-const COMMANDS: &[&str] = &[
-    "bye", "cd", "dir", "exit", "get", "help", "ls", "protocol", "pwd", "quit", "set",
-];
-const HELP: &str = "\
-Commands:
-  cd [DIR]         change directory; with no DIR, go to the top
-  dir [-R] [PATH]  same as ls
-  get FILE         download a file; FILE may use * and ? wildcards,
-                   e.g. get *.exe
-  help             show this list
-  ls [-R] [PATH]   list a directory; -R lists everything below it
-  protocol [NAME]  show or set the download protocol: zmodem (z),
-                   xmodem (x) or xmodem-1k (x-1k); zmodem by default
-  pwd              show the current directory
-  quit             end the session (or Ctrl-D)
-  set editing on|off
-                   turn line editing on or off for this session
+/// Printed after the command list in `help`.
+const HELP_FOOTER: &str = "\
 With editing on, Tab completes names, Up and Down (or Ctrl-P and Ctrl-N)
 recall earlier commands, and Ctrl-D logs out. Turn it off if your terminal
 sends odd keystrokes. Ctrl-C stops a long listing.
@@ -95,6 +77,7 @@ fn session(
     options: &Options,
     log: &mut dyn FnMut(&str),
 ) -> io::Result<()> {
+    let mut tree = root.clone();
     let mut cwd = PathBuf::new();
     let mut protocol = Protocol::Zmodem;
     let mut editing = options.editing;
@@ -103,7 +86,15 @@ fn session(
     loop {
         let prompt = format!("{}> ", location(&cwd));
         con.print(&prompt)?;
-        let mut completer = |line: &str| complete(root, &cwd, line);
+        let mut completer = |line: &str| {
+            shell::complete(
+                Mode::Terminal,
+                line,
+                &argument,
+                (&mut root.clone(), &cwd),
+                None,
+            )
+        };
         let input = match con.read_line(
             options.idle_timeout,
             editing.then_some((prompt.as_str(), &mut completer as Completer)),
@@ -118,18 +109,24 @@ fn session(
                 return Ok(());
             }
         };
-        let input = input.trim();
-        let (command, arg) = match input.split_once(' ') {
-            Some((command, arg)) => (command, arg.trim()),
-            None => (input, ""),
+        let (name, arg) = shell::split(&input);
+        if name.is_empty() {
+            continue;
+        }
+        let Some(command) = shell::command(name) else {
+            con.print(&shell::unknown(name))?;
+            continue;
         };
-        match command.to_ascii_lowercase().as_str() {
-            "" => {}
-            "quit" | "bye" | "exit" => {
+        if command.terminal.is_none() {
+            con.print(&shell::unavailable(name, Mode::Terminal))?;
+            continue;
+        }
+        match command.name() {
+            "quit" => {
                 con.print("Goodbye.\n")?;
                 return Ok(());
             }
-            "help" | "?" => con.print(HELP)?,
+            "help" => con.print(&shell::help(Mode::Terminal, HELP_FOOTER))?,
             "pwd" => con.print(&format!("{}\n", location(&cwd)))?,
             "cd" => {
                 let dir = if arg.is_empty() {
@@ -137,7 +134,7 @@ fn session(
                 } else {
                     target(&cwd, arg)
                 };
-                match lookup(root, &dir) {
+                match tree.lookup(&dir) {
                     Ok((Kind::Dir, dir)) => cwd = dir,
                     Ok((Kind::File { .. }, _)) => {
                         con.print(&format!("{}: Not a directory\n", ascii(arg)))?
@@ -145,9 +142,15 @@ fn session(
                     Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e)))?,
                 }
             }
-            "ls" | "dir" => ls(con, root, &cwd, arg)?,
+            "ls" | "dir" => shell::ls(con, &mut tree, &cwd, arg)?,
+            "get" if shell::flag(arg, "-f").0 => {
+                con.print("get: -f is not available in terminal mode\n")?
+            }
             "get" if arg.is_empty() => con.print("Usage: get FILE\n")?,
-            "get" => get(con, root, &cwd, arg, protocol, options, log)?,
+            "get" => match shell::expand(&mut tree, &cwd, arg) {
+                Ok(files) => transfer(con, root, &files, protocol, options, log)?,
+                Err(message) => con.print(&message)?,
+            },
             "protocol" if arg.is_empty() => {
                 con.print(&format!("Protocol: {}\n", protocol.name()))?
             }
@@ -160,337 +163,26 @@ fn session(
                     "Unknown protocol. Choose zmodem (z), xmodem (x) or xmodem-1k (x-1k).\n",
                 )?,
             },
-            "set" => {
-                let words = arg.to_ascii_lowercase();
-                match words.split_whitespace().collect::<Vec<_>>()[..] {
-                    [] | ["editing"] => {}
-                    ["editing", "on"] => editing = true,
-                    ["editing", "off"] => editing = false,
-                    _ => {
-                        con.print("Usage: set editing on|off\n")?;
-                        continue;
-                    }
-                }
-                let state = if editing { "on" } else { "off" };
-                con.print(&format!("Editing is {state}.\n"))?;
-            }
-            _ => con.print("Unknown command. Type help for a list of commands.\n")?,
-        }
-    }
-}
-
-/// `get FILE`, where the last part of FILE may hold `*` and `?` wildcards.
-fn get(
-    con: &mut Console,
-    root: &Root,
-    cwd: &Path,
-    arg: &str,
-    protocol: Protocol,
-    options: &Options,
-    log: &mut dyn FnMut(&str),
-) -> io::Result<()> {
-    let path = target(cwd, arg);
-    let pattern = file_name(&path);
-    if !pattern.contains(['*', '?']) {
-        return match lookup(root, &path) {
-            Ok((Kind::File { .. }, path)) => transfer(con, root, &[path], protocol, options, log),
-            Ok((Kind::Dir, _)) => con.print(&format!("{}: Is a directory\n", ascii(arg))),
-            Err(e) => con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
-        };
-    }
-    let dir = match root.find(path.parent().unwrap_or(Path::new(""))) {
-        Ok(dir) => dir,
-        Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
-    };
-    let entries = match root.list(&dir) {
-        Ok(entries) => entries,
-        Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
-    };
-    let files: Vec<PathBuf> = entries
-        .into_iter()
-        .filter(|e| matches!(e.kind, Kind::File { .. }) && wildcard(&pattern, &e.name))
-        .map(|e| dir.join(e.name))
-        .collect();
-    if files.is_empty() {
-        return con.print(&format!("{}: No match\n", ascii(arg)));
-    }
-    transfer(con, root, &files, protocol, options, log)
-}
-
-/// Match `name` against `pattern`, where `*` is any run of characters and
-/// `?` is any one character. Case is ignored, as DOS users expect.
-fn wildcard(pattern: &str, name: &str) -> bool {
-    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
-    let name: Vec<char> = name.to_lowercase().chars().collect();
-    let (mut p, mut n) = (0, 0);
-    // Where to resume after the most recent `*`: (pattern, name) positions.
-    let mut star = None;
-    while n < name.len() {
-        match pattern.get(p) {
-            Some('*') => {
-                star = Some((p + 1, n));
-                p += 1;
-            }
-            Some(&c) if c == '?' || c == name[n] => {
-                p += 1;
-                n += 1;
-            }
-            _ => match star {
-                Some((sp, sn)) => {
-                    star = Some((sp, sn + 1));
-                    p = sp;
-                    n = sn + 1;
-                }
-                None => return false,
+            "set" => match shell::set_editing(arg, &mut editing) {
+                Ok(()) => con.print(&format!(
+                    "Editing is {}.\n",
+                    if editing { "on" } else { "off" }
+                ))?,
+                Err(usage) => con.print(usage)?,
             },
-        }
-    }
-    pattern[p..].iter().all(|&c| c == '*')
-}
-
-/// The last component of `path`, or empty for the top.
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-/// `ls [-R] [PATH]` (or `dir`): one entry per line, directories marked with `/`.
-fn ls(con: &mut Console, root: &Root, cwd: &Path, arg: &str) -> io::Result<()> {
-    let (recursive, arg) = match arg.strip_prefix("-R") {
-        Some(rest) if rest.is_empty() || rest.starts_with(' ') => (true, rest.trim()),
-        _ => (false, arg),
-    };
-    let mut lines = Vec::new();
-    match lookup(root, &target(cwd, arg)) {
-        Ok((Kind::File { size }, _)) => lines.push((arg.to_string(), Some(size))),
-        Ok((Kind::Dir, path)) => {
-            let mut seen = HashSet::from_iter(root.resolve(&path).ok());
-            if let Err(e) = walk(root, &path, "", recursive, &mut seen, &mut lines) {
-                return con.print(&format!("{}: {}\n", ascii(arg), reason(&e)));
-            }
-        }
-        Err(e) => return con.print(&format!("{}: {}\n", ascii(arg), reason(&e))),
-    }
-    let width = lines
-        .iter()
-        .filter(|(_, size)| size.is_some())
-        .map(|(name, _)| name.len())
-        .max()
-        .unwrap_or(0)
-        .min(NAME_COLUMN);
-    for (name, size) in lines {
-        if con.interrupted()? {
-            return con.print("^C\n");
-        }
-        con.print(&match size {
-            Some(size) => format!("{:<width$}  {:>6}\n", ascii(&name), human(size)),
-            None => format!("{}\n", ascii(&name)),
-        })?;
-    }
-    Ok(())
-}
-
-/// Collect the entries of `dir`, named with `prefix`; with `recursive`, each
-/// directory is followed by its contents. `seen` holds the real paths
-/// already listed, so symlink loops are listed once. Unreadable
-/// subdirectories are shown but not entered.
-fn walk(
-    root: &Root,
-    dir: &Path,
-    prefix: &str,
-    recursive: bool,
-    seen: &mut HashSet<PathBuf>,
-    lines: &mut Vec<(String, Option<u64>)>,
-) -> io::Result<()> {
-    for entry in root.list(dir)? {
-        let name = format!("{prefix}{}", entry.name);
-        match entry.kind {
-            Kind::File { size } => lines.push((name, Some(size))),
-            Kind::Dir => {
-                let name = format!("{name}/");
-                lines.push((name.clone(), None));
-                let sub = dir.join(&entry.name);
-                if recursive
-                    && let Ok(real) = root.resolve(&sub)
-                    && seen.insert(real)
-                {
-                    let _ = walk(root, &sub, &name, true, seen, lines);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Tab completion: a command name for the first word, otherwise the name
-/// being typed in the argument (directories only for `cd`).
-fn complete(root: &Root, cwd: &Path, line: &str) -> Completion {
-    let unchanged = || Completion {
-        line: line.to_string(),
-        choices: Vec::new(),
-    };
-    let Some((command, _)) = line.split_once(' ') else {
-        return complete_keyword("", line, COMMANDS);
-    };
-    let command = command.to_ascii_lowercase();
-    let mut start = command.len() + 1;
-    start += line[start..].len() - line[start..].trim_start().len();
-    if command == "set" {
-        let rest = &line[start..];
-        return match rest.get(..8) {
-            Some(word) if word.eq_ignore_ascii_case("editing ") => {
-                let value = rest[8..].trim_start();
-                complete_keyword(&line[..line.len() - value.len()], value, &["off", "on"])
-            }
-            _ => complete_keyword(&line[..start], rest, &["editing"]),
-        };
-    }
-    if command == "protocol" {
-        let names = Protocol::ALL.map(Protocol::name);
-        return complete_keyword(&line[..start], &line[start..], &names);
-    }
-    if matches!(command.as_str(), "ls" | "dir") && line[start..].starts_with("-R ") {
-        start += 3;
-        start += line[start..].len() - line[start..].trim_start().len();
-    }
-    let word = &line[start..];
-    let (dir_part, prefix) = match word.rfind('/') {
-        Some(i) => word.split_at(i + 1),
-        None => ("", word),
-    };
-    let Ok(entries) = root
-        .find(&target(cwd, dir_part))
-        .and_then(|dir| root.list(&dir))
-    else {
-        return unchanged();
-    };
-    let prefix = prefix.to_lowercase();
-    let matches: Vec<_> = entries
-        .into_iter()
-        .filter(|e| e.name.to_lowercase().starts_with(&prefix))
-        .filter(|e| command != "cd" || e.kind == Kind::Dir)
-        .filter(|e| e.name.bytes().all(|b| (0x20..=0x7e).contains(&b)))
-        .collect();
-    let head = &line[..start];
-    match &matches[..] {
-        [] => unchanged(),
-        [only] => Completion {
-            line: match only.kind {
-                Kind::Dir => format!("{head}{dir_part}{}/", only.name),
-                Kind::File { .. } => format!("{head}{dir_part}{} ", only.name),
-            },
-            choices: Vec::new(),
-        },
-        [first, rest @ ..] => {
-            let common = rest.iter().fold(first.name.len(), |n, e| {
-                first.name[..n]
-                    .bytes()
-                    .zip(e.name.bytes())
-                    .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
-                    .count()
-            });
-            if common > prefix.len() {
-                Completion {
-                    line: format!("{head}{dir_part}{}", &first.name[..common]),
-                    choices: Vec::new(),
-                }
-            } else {
-                Completion {
-                    line: line.to_string(),
-                    choices: matches
-                        .iter()
-                        .map(|e| match e.kind {
-                            Kind::Dir => format!("{}/", e.name),
-                            Kind::File { .. } => e.name.clone(),
-                        })
-                        .collect(),
-                }
-            }
+            other => unreachable!("{other} is available in terminal mode"),
         }
     }
 }
 
-/// Complete `word`, which follows `head` on the line, from a fixed list.
-fn complete_keyword(head: &str, word: &str, keywords: &[&str]) -> Completion {
-    let lower = word.to_ascii_lowercase();
-    let names: Vec<&str> = keywords
-        .iter()
-        .copied()
-        .filter(|k| k.starts_with(&lower))
-        .collect();
-    let line = format!("{head}{word}");
-    match names[..] {
-        [] => Completion {
-            line,
-            choices: Vec::new(),
-        },
-        [name] => Completion {
-            line: format!("{head}{name} "),
-            choices: Vec::new(),
-        },
-        _ => Completion {
-            line,
-            choices: names.iter().map(|n| n.to_string()).collect(),
-        },
+/// What Tab completes in each command's argument.
+fn argument(command: &str) -> Argument {
+    match command {
+        "cd" => Argument::Remote { dirs_only: true },
+        "ls" | "dir" | "get" => Argument::Remote { dirs_only: false },
+        "protocol" => Argument::Words(&["xmodem", "xmodem-1k", "zmodem"]),
+        _ => Argument::None,
     }
-}
-
-/// Find a typed path ignoring case; returns its kind and on-disk path.
-fn lookup(root: &Root, path: &Path) -> io::Result<(Kind, PathBuf)> {
-    let found = root.find(path)?;
-    Ok((root.stat(&found)?, found))
-}
-
-/// Resolve a typed path against `cwd` without touching the filesystem.
-/// A leading `/` starts at the top, and `..` stops there.
-fn target(cwd: &Path, arg: &str) -> PathBuf {
-    let mut path = if arg.starts_with('/') {
-        PathBuf::new()
-    } else {
-        cwd.to_path_buf()
-    };
-    for part in arg.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                path.pop();
-            }
-            _ => path.push(part),
-        }
-    }
-    path
-}
-
-/// A short error message for a path the user typed.
-fn reason(e: &io::Error) -> String {
-    match e.kind() {
-        io::ErrorKind::NotFound => "No such file or directory".into(),
-        io::ErrorKind::NotADirectory => "Not a directory".into(),
-        io::ErrorKind::PermissionDenied => "Permission denied".into(),
-        _ => e.to_string(),
-    }
-}
-
-/// A size such as `512B`, `1.5kB`, `12MB` (powers of 1024).
-fn human(size: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut value = size as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit > 0 && value.round() >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    let number = if unit > 0 && value < 9.95 {
-        format!("{value:.1}")
-    } else {
-        format!("{value:.0}")
-    };
-    format!("{}{}", number.trim_end_matches(".0"), UNITS[unit])
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -501,8 +193,6 @@ enum Protocol {
 }
 
 impl Protocol {
-    const ALL: [Protocol; 3] = [Protocol::Zmodem, Protocol::Xmodem, Protocol::Xmodem1k];
-
     fn name(self) -> &'static str {
         match self {
             Protocol::Zmodem => "zmodem",
@@ -681,32 +371,6 @@ fn wrap(text: &str, width: usize) -> String {
     out
 }
 
-/// The current directory as shown to the user, e.g. `/games/infocom`.
-fn location(cwd: &Path) -> String {
-    let mut out = String::new();
-    for part in cwd.iter() {
-        out.push('/');
-        out.push_str(&part.to_string_lossy());
-    }
-    if out.is_empty() {
-        out.push('/');
-    }
-    ascii(&out)
-}
-
-/// Make a name safe for a plain ASCII terminal.
-fn ascii(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_graphic() || c == ' ' {
-                c
-            } else {
-                '?'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,7 +546,14 @@ mod tests {
         c.send("get\r");
         c.expect("Usage: get FILE");
         c.send("frob\r");
-        c.expect("Unknown command.");
+        c.expect("Unknown command: frob\r\nType help for a list of commands.\r\n/> ");
+        c.send("put x\rLCD /\rlls\rldir\rlpwd\rget -f x\r");
+        c.expect("put: not available in terminal mode\r\n/> ");
+        c.expect("LCD: not available in terminal mode\r\n/> ");
+        c.expect("lls: not available in terminal mode\r\n/> ");
+        c.expect("ldir: not available in terminal mode\r\n/> ");
+        c.expect("lpwd: not available in terminal mode\r\n/> ");
+        c.expect("get: -f is not available in terminal mode\r\n/> ");
         c.send("cd /../..\rpwd\r");
         c.expect("\r\n/\r\n");
         c.send("quit\r");
@@ -1094,7 +765,7 @@ mod tests {
         let out = c.expect("/docs> ");
         assert_eq!(
             out,
-            "[A\r\nUnknown command. Type help for a list of commands.\r\n/docs> "
+            "[A\r\nUnknown command: [A\r\nType help for a list of commands.\r\n/docs> "
         );
         // Backspace still edits.
         c.send("pwx\x08d\r");
@@ -1205,20 +876,6 @@ mod tests {
         assert!(out.lines().all(|l| l.len() <= 80), "{out}");
         c.send("quit\r");
         c.finish().unwrap();
-    }
-
-    #[test]
-    fn help_lists_commands_alphabetically() {
-        let names: Vec<&str> = HELP
-            .lines()
-            .filter_map(|l| l.strip_prefix("  "))
-            .filter(|l| !l.starts_with(' '))
-            .filter_map(|l| l.split_whitespace().next())
-            .collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted);
-        assert_eq!(names.len(), 9, "{names:?}");
     }
 
     #[test]
@@ -1347,45 +1004,23 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_matching() {
-        assert!(wildcard("*.exe", "GAME.EXE"));
-        assert!(wildcard("*", "x"));
-        assert!(wildcard("a?c*", "abcdef"));
-        assert!(wildcard("*a*b", "xaxxb"));
-        assert!(!wildcard("*.exe", "game.exe.txt"));
-        assert!(!wildcard("a?c", "ac"));
-    }
-
-    #[test]
-    fn human_sizes() {
-        let cases = [
-            (0, "0B"),
-            (1, "1B"),
-            (1023, "1023B"),
-            (1024, "1kB"),
-            (1536, "1.5kB"),
-            (10 * 1024, "10kB"),
-            (1024 * 1024 - 1, "1MB"),
-            (1474560, "1.4MB"),
-            (5 << 30, "5GB"),
-        ];
-        for (size, text) in cases {
-            assert_eq!(human(size), text, "{size}");
-        }
-    }
-
-    #[test]
-    fn target_resolves_typed_paths() {
-        let cwd = Path::new("a/b");
-        assert_eq!(target(cwd, ""), Path::new("a/b"));
-        assert_eq!(target(cwd, "c/./d/"), Path::new("a/b/c/d"));
-        assert_eq!(target(cwd, ".."), Path::new("a"));
-        assert_eq!(target(cwd, "../../../.."), Path::new(""));
-        assert_eq!(target(cwd, "/x"), Path::new("x"));
-    }
-
-    #[test]
-    fn ascii_replaces_non_ascii() {
-        assert_eq!(ascii("caf\u{e9}"), "caf?");
+    fn help_shows_every_command() {
+        let mut c = start(fast());
+        c.expect(PROMPT);
+        c.send(
+            "help
+",
+        );
+        let out = c.expect("\r\n/> ");
+        assert!(out.contains("\r\n  protocol [NAME]"), "{out}");
+        assert!(out.contains("Ctrl-C stops a long listing.\r\n"), "{out}");
+        assert!(
+            out.contains("Not available in terminal mode: lcd, ldir, lls, lpwd, put.\r\n"),
+            "{out}"
+        );
+        c.send("?\r");
+        c.expect("Commands:");
+        c.send("quit\r");
+        c.finish().unwrap();
     }
 }

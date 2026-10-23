@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 /// A browsable directory tree.
+#[derive(Clone, Debug)]
 pub struct Root {
     path: PathBuf,
 }
