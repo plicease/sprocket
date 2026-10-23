@@ -10,6 +10,11 @@
  * on the wire. It also times the end of a frame (CRC check and building the
  * response), during which the host is waiting and the line is idle.
  *
+ * The decoder checks a frame's CRC when the closing flag arrives, after the
+ * last byte, so that check does not compete with incoming bytes. It is
+ * timed on its own and subtracted from the decoding loop; otherwise it
+ * would be spread over every byte and overstate the per-byte cost.
+ *
  * The BIOS timer ticks only 18.2 times a second, so each test repeats
  * frames until at least MIN_TICKS have passed (checking the timer only
  * between frames, never per byte); a fast machine runs many more frames.
@@ -67,6 +72,8 @@ int main(int argc, char **argv)
     uint8_t dummy;
     unsigned long frames = 0;
     unsigned long tenths_per_byte;
+    unsigned long tenths_check;
+    unsigned long tenths_total;
     unsigned long us_end;
     const uint8_t *out;
     uint16_t out_len;
@@ -98,11 +105,29 @@ int main(int argc, char **argv)
         }
     }
     ticks = port_ticks() - start;
-    /* In tenths of a microsecond, so fast machines still show a figure. */
-    tenths_per_byte = ticks * TICK_US * 10 / bytes;
-    printf("%lu bytes in %lu ticks: about %lu.%lu us per byte (%lu frames decoded)\n",
-           (unsigned long)bytes, (unsigned long)ticks, tenths_per_byte / 10,
-           tenths_per_byte % 10, frames);
+    /* Times are in tenths of a microsecond, so fast machines still show a
+     * figure. */
+    tenths_total = ticks * TICK_US * 10;
+    printf("%lu bytes in %lu ticks, including %lu frame checks\n",
+           (unsigned long)bytes, (unsigned long)ticks, frames);
+
+    /* The CRC check that finish() runs at each closing flag. */
+    start = tick_edge();
+    for (f = 0; f < FRAMES || port_ticks() - start < MIN_TICKS; f++) {
+        (void)crc16(body, sizeof body);
+    }
+    ticks = port_ticks() - start;
+    tenths_check = ticks * TICK_US * 10 / f;
+    /* Timing noise could make the check look longer than the whole loop. */
+    if (frames * tenths_check < tenths_total) {
+        tenths_per_byte = (tenths_total - frames * tenths_check) / bytes;
+    } else {
+        tenths_per_byte = 0;
+    }
+    printf("Receive path: about %lu.%lu us per byte, not counting the frame check\n",
+           tenths_per_byte / 10, tenths_per_byte % 10);
+    printf("Frame check (CRC of %u bytes, at the closing flag): about %lu.%lu ms\n",
+           (unsigned)sizeof body, tenths_check / 10000, tenths_check / 1000 % 10);
 
     cl.max_payload = PAYLOAD;
     cl.capabilities = 0;
