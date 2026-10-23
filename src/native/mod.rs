@@ -9,3 +9,4 @@ pub mod link;
 #[cfg(test)]
 mod mock;
 pub mod session;
+pub mod tree;
