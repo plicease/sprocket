@@ -79,7 +79,7 @@ The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-2
 sprocket hello --port /dev/ttyS0 --baud 9600
 ```
 
-`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET COM1 9600` (port and baud as needed). Validation so far is listed below. On a slow machine, run `BENCH.EXE` first: it shows the fastest baud rate the client can keep up with there.
+`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET SERVER COM1 9600` (port and baud as needed). Validation so far is listed below. On a slow machine, run `BENCH.EXE` first: it shows the fastest baud rate the client can keep up with there.
 
 ### Validation status
 

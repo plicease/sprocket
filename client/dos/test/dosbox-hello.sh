@@ -62,7 +62,7 @@ serial2=disabled
 [autoexec]
 mount c $work
 c:
-SPROCKET COM1 $baud > OUT.TXT
+SPROCKET SERVER COM1 $baud > OUT.TXT
 EOF
 # DOSBox-X is left running after SPROCKET exits and is stopped when this
 # script exits: quitting at once could drop the last bytes sent.
