@@ -29,7 +29,16 @@ uint16_t port_errors(void);
 uint32_t port_ticks(void);
 uint16_t port_ticks_per_second(void);
 
-/* Nonzero if the user pressed Esc. */
+/* Nonzero if the user pressed Esc. Other keys pressed are discarded. */
 int port_escape(void);
+
+/* Results of port_key besides a character. */
+#define PORT_NO_KEY (-1)
+#define PORT_EOF (-2)
+
+/* The next key typed, as an ASCII code, if there is one: for the
+ * client's prompt. Keys without an ASCII code are skipped. When standard
+ * input is a file or pipe, its characters come instead, then PORT_EOF. */
+int port_key(void);
 
 #endif
