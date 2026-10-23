@@ -1,6 +1,6 @@
 # Sprocket file-transfer UI design
 
-**Status:** Proposed design  
+**Status:** Proposed design; command names and transfer policies decided 2026-10-23  
 **Date:** 2026-10-23  
 **Scope:** Native Sprocket and terminal (XMODEM/ZMODEM) file-transfer interfaces
 
@@ -35,15 +35,17 @@ sprocket serve --mode terminal --port /dev/ttyS0 --baud 38400 --root ~/dos
 
 Either Linux/Rust or DOS can run either native role. The roles stay fixed for the session: the client initiates requests; the server responds. File transfer in either direction does **not** require both peers to initiate commands simultaneously.
 
-Illustrative invocations (the DOS server and Linux client command names are **provisional**, not approved syntax):
+Invocations (decided 2026-10-23):
 
 ```text
-Linux server: sprocket serve --mode native --root ~/dos --port /dev/ttyS0
-DOS client:   SPROCKET COM1 38400
+Linux server: sprocket serve --mode native --root ~/dos --port /dev/ttyS0 [--writable]
+DOS client:   SPROCKET CLIENT COM1 38400
 
-DOS server:   SPROCKET SERVER COM1 38400 C:\SHARE
-Linux client: sprocket connect --port /dev/ttyS0 --baud 38400
+DOS server:   SPROCKET SERVER COM1 38400 C:\SHARE [/W]
+Linux client: sprocket client --port /dev/ttyS0 --baud 38400
 ```
+
+The DOS program is one `.EXE` with subcommands. Both roles share the serial, framing, CRC and file code, so one program is smaller than two, and bootstrap sends a single file. With no subcommand it prints its usage. `SPROCKET SERVER` also answers `HELLO` and `PING`, so `sprocket hello` works against it.
 
 The existing native v1 host-driven session assumption will need to be generalized for role reversal while retaining its framing, CRC, sequencing, retransmission, and duplicate handling.
 
@@ -125,7 +127,14 @@ There are **no `mget` or `mput` commands**. `get` and `put` accept either a file
 - Report errors/cancellation and keep the session usable where possible.
 - Preserve existing terminal-mode XMODEM/ZMODEM `get` behavior unless deliberately revised.
 
-**Still to decide:** destination path and rename syntax; overwrite policy and prompting; whether a failed transfer stops a multi-file operation; atomic writes and possible resume support.
+Decided 2026-10-23:
+
+- **Overwriting:** `get` and `put` refuse to replace an existing file unless asked explicitly with `-f` (`get -f PATTERN`, `put -f PATTERN`). There is no prompting.
+- **Multiple files:** the first failed file stops the rest. In terminal mode a file the receiver declines (a ZMODEM skip) is not a failure, as today.
+- **Modification times:** native transfers carry each file's modification time and set it on the copy. On the wire it is a DOS date and time (local time, 2-second steps, 1980 to 2107), with 0 meaning unknown; the Linux side converts with its local time zone. A file dated before 1980 is sent as unknown.
+- **Atomic writes:** both sides write to a temporary file and rename it into place only after the length and CRC check, as `FILE_COMMIT` already requires.
+
+**Still to decide:** destination path and rename syntax (files keep their names and go to the current directory); resume support.
 
 ## Root confinement and permissions
 
@@ -138,7 +147,7 @@ DOS root:   C:\SHARE        -> remote /GAMES/DOOM.EXE
 
 Prevent `..` traversal, absolute-path and DOS drive-relative escapes, and symlink escapes where applicable. Avoid naive string-prefix checks. Follow existing terminal-mode hidden-file rules where applicable. Document the trusted-root and concurrent-modification/TOCTOU assumptions.
 
-Servers should support read-only operation. Native `put` requires server-side write permission; the option name and default are **not yet settled**. Terminal mode remains read-only, and `put` always errors there.
+Servers should support read-only operation. Native `put` requires server-side write permission, which is **off unless turned on explicitly**: `--writable` for `sprocket serve`, `/W` for `SPROCKET SERVER`. A read-only server refuses `put` with an explicit message. Terminal mode remains read-only, and `put` always errors there.
 
 ## Editing and completion
 
@@ -153,6 +162,8 @@ Servers should support read-only operation. Native `put` requires server-side wr
 Linux completion covers command names, local paths, and remote paths. Remote completion may cache listings to avoid excessive serial traffic. Persistent history is desirable, not required initially; a Rust library such as `rustyline` is an implementation choice.
 
 DOS and future vintage clients may omit history, completion, and advanced editing when too expensive. No ANSI terminal dependency is required. **Functional compatibility is required; interactive conveniences are platform-dependent.** If `set editing` is not supported, recognize it and explicitly report that it is unavailable.
+
+The Linux client reuses the terminal server's line editor on its own terminal (in raw mode), rather than a library such as `rustyline`, so its prompt, completion display and editing keys are the same as terminal mode's.
 
 ## Implementation boundaries
 
@@ -174,8 +185,8 @@ Separate command parsing/dispatch, listing formatting, filesystem operations, an
 
 ## Open decisions
 
-- Final Linux native-client CLI and DOS native-server invocation.
-- Write-enable option/default; overwrite and unattended-operation policies.
-- Destination/rename syntax, collisions, and multi-file error handling.
-- Atomic writes and resume behavior.
-- Availability of `set editing` on each native platform.
+- Destination/rename syntax.
+- Resume behavior.
+- Unattended-operation policies.
+
+Decided on 2026-10-23: the command names above, write permission off by default, `-f` to overwrite, stopping at the first failed file, modification times as DOS dates, and atomic writes. `set editing` works in the Linux client; the first DOS client recognizes it and reports that it is unavailable.
