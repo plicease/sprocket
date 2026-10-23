@@ -30,7 +30,7 @@ enum Command {
     /// Connect to a SPROCKET server and browse it with ftp-style commands:
     /// get, put, ls, cd, and lls, lcd for this machine
     Client(ClientArgs),
-    /// Connect to a SPROCKET client, show what it supports, and ping it
+    /// Connect to a SPROCKET server, show what it supports, and ping it
     Hello(HelloArgs),
 }
 
@@ -150,7 +150,7 @@ struct HelloArgs {
     #[arg(long, default_value_t = 9600)]
     baud: u32,
 
-    /// Seconds to keep calling the client before giving up
+    /// Seconds to keep calling the server before giving up
     #[arg(long, default_value_t = 60)]
     wait: u64,
 
@@ -315,7 +315,7 @@ fn hello(args: HelloArgs) -> anyhow::Result<()> {
         ..session::Options::default()
     };
     eprintln!(
-        "calling the client on {}; waiting up to {}s",
+        "calling the server on {}; waiting up to {}s",
         args.port, args.wait
     );
     let result = hello_session(&args, link.as_mut(), &options, &log);
@@ -336,7 +336,7 @@ fn hello_session(
     let observer = |event: &native::link::Event| {
         use native::link::Event;
         match event {
-            // Seq 0 is the HELLO, repeated until the client answers.
+            // Seq 0 is the HELLO, repeated until the server answers.
             Event::Retransmit { seq: 0, .. } | Event::Pending { .. } => {}
             Event::Retransmit { seq, attempt } => {
                 log(&format!("retransmitting request {seq} (attempt {attempt})"))
@@ -352,7 +352,7 @@ fn hello_session(
         session::Session::connect(link, options, observer).context("cannot start a session")?;
     let client = session.client().clone();
     println!(
-        "session {:04x}: client {} on {}, protocol {}.{}",
+        "session {:04x}: server {} on {}, protocol {}.{}",
         session.session_id(),
         if client.version.is_empty() {
             "(no version)"
@@ -364,7 +364,7 @@ fn hello_session(
         client.minor,
     );
     println!(
-        "max payload: client {} bytes, negotiated {} bytes",
+        "max payload: server {} bytes, negotiated {} bytes",
         client.max_payload,
         session.max_payload()
     );

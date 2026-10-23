@@ -284,13 +284,13 @@ impl fmt::Display for Error {
         match self {
             Error::Link(e) => write!(f, "{e}"),
             Error::NoClient { waited } => {
-                write!(f, "no client answered within {}s", waited.as_secs())
+                write!(f, "no server answered within {}s", waited.as_secs())
             }
             Error::VersionMismatch { major, minor } => write!(
                 f,
-                "client speaks protocol {major}.{minor}; this host speaks {MAJOR}.{MINOR}"
+                "server speaks protocol {major}.{minor}; this side speaks {MAJOR}.{MINOR}"
             ),
-            Error::Client(e) => write!(f, "client reported {e}"),
+            Error::Client(e) => write!(f, "server reported {e}"),
             Error::Protocol(what) => write!(f, "protocol error: {what}"),
         }
     }
