@@ -3,6 +3,7 @@
 //! file-transfer protocols, the interactive terminal file server, and the
 //! native protocol.
 
+pub mod console;
 pub mod files;
 pub mod native;
 pub mod serve;
