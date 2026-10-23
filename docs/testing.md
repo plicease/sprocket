@@ -18,7 +18,7 @@
 | 0 | Rust unit tests and in-memory/PTY transports | Packet encoding, parsers, state machines, synthetic errors | Does not execute DOS code |
 | 1 | DOSBox-X on `athena` | Fast DOS build/run loop, virtual COM port, protocol and basic BIOS disk tests | Timing, UART and BIOS behavior are not fully representative |
 | 2 | 86Box on `athena` | Period PC motherboard, 8088/8086-class CPU, UART, BIOS and disk-controller behavior | Requires compatible ROMs and careful machine configuration |
-| 3 | Real hardware: `smokey`, NuXT, PS/2 Model 70 | Physical cable, UART, DOS/BIOS and actual disk behavior | Slow iteration; use read-only operations first |
+| 3 | Real hardware: `smokey` (P75), NuXT (`phaistos`), PS/2 Model 70 | Physical cable, UART, DOS/BIOS and actual disk behavior | Slow iteration; use read-only operations first |
 
 DOSBox-X: https://dosbox-x.com/ and https://github.com/joncampbell123/dosbox-x/releases
 
@@ -84,7 +84,7 @@ Initially automate Rust unit tests and protocol tests using a Rust mock client. 
 
 Run on 2026-10-21 with 86Box build 9001: machine `ibmxt86` (IBM XT, 1986 BIOS), 8088 at 4.77 MHz, 640 KB, CGA, a 3.5" 720K drive, and COM1 an 8250 without a FIFO. The boot disk is FreeDOS 1.3's 720K `x86BOOT.img` (FreeDOS kernel 2043 and FreeCOM run on the 8088), with `FDCONFIG.SYS` and `FDAUTO.BAT` replaced with mtools so that it boots straight to `BENCH` and `SPROCKET COM1 9600`.
 
-**Timing.** `BENCH.EXE` repeats the client's per-byte receive work over 1 KB frames:
+**Timing.** `BENCH.EXE` repeats the client's per-byte receive work over 1 KB frames. These figures come from a version that also counted each frame's CRC check as per-byte time, which overstates the receive path; see [the NuXT results](#real-hardware-nuxt-phaistos):
 
 | Build | µs per byte | Margin at 9600 | at 19200 | at 38400 |
 | --- | --- | --- | --- | --- |
@@ -99,6 +99,35 @@ Run on 2026-10-21 with 86Box build 9001: machine `ibmxt86` (IBM XT, 1986 BIOS), 
 - Serial: `serial1_device = stdio` with `[Virtual Console (COM) #1]` `mode = 1` creates a PTY. 86Box pauses on a dialog naming it until Return is pressed (`xdotool key Return`). The PTY number is the `tty-index` in `/proc/<86Box pid>/fdinfo/<fd>` for its `/dev/ptmx` descriptor.
 - 86Box ignores SIGTERM here; stop it with SIGKILL.
 - Results printed by the guest can be read back from the floppy image with `mtype` after 86Box stops.
+
+### Real hardware: NuXT (`phaistos`)
+
+Run on 2026-10-23: `phaistos`, a NuXT with an NEC V20 switchable between 4.77 and 9.54 MHz, running DOS. Linked to `twintwist` (`/dev/ttyS0`) by a null-modem cable, 8N1, no flow control. Each run was `sprocket hello --pings 20` on the host with `SPROCKET COM1 <baud>` on the NuXT.
+
+**Timing.** `BENCH.EXE` on the NuXT:
+
+| Clock | Receive path, per byte | Frame check (1 KB CRC) | End of frame | 9600 | 19200 | 38400 | 57600 | 115200 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4.77 MHz | 187.4 µs | 104.3 ms | 252.6 ms | 5.5× | 2.7× | 1.3× | too slow (0.9×) | too slow (0.4×) |
+| 9.54 MHz | 92.5 µs | 52.0 ms | 126.3 ms | 11.2× | 5.6× | 2.8× | 1.8× | too slow (0.9×) |
+
+**End to end.**
+
+| Clock | Baud | Result | Time per ping (1 KB each way) |
+| --- | --- | --- | --- |
+| 4.77 MHz | 9600 | clean | 2.282 s |
+| 4.77 MHz | 19200 | clean | 1.198 s |
+| 4.77 MHz | 38400 | clean | 0.661–0.662 s |
+| 4.77 MHz | 57600 | failed | — |
+| 9.54 MHz | 38400 | clean | 0.608–0.609 s |
+| 9.54 MHz | 57600 | clean | 0.431–0.435 s |
+| 9.54 MHz | 115200 | failed: `0 frames, 11 dropped, 0 repeated, 22 receive errors` | none (stopped with Esc) |
+
+A clean run means all 20 pings and `CLOSE` completed, every ping took the same time (a retransmission would add a timeout of seconds), and the client reported `22 frames, 0 dropped, 0 repeated, 0 receive errors`. The clock for the 9600 and 19200 runs was not recorded; their 115 ms turnaround matches 4.77 MHz, against about 70 ms at 9.54 MHz. Those two rates were not run at 9.54 MHz, since they have more margin than runs that passed. At 115200 not even `HELLO` got through: with no FIFO, any sustained shortfall overruns the UART within a dozen or so bytes, so a near miss (0.9×) fails as completely as a wide one.
+
+Each ping's time is the two frames on the wire (about 2080 bytes) plus the client's turnaround: about 115–120 ms at 4.77 MHz and 67–74 ms at 9.54 MHz. Most of that is the frame check; building the response overlaps with sending it, so `BENCH`'s end-of-frame figure, which includes encoding, is not added in full.
+
+**What this changed.** The first `BENCH` timed whole frames and spread each frame's CRC check over every byte, reporting 282 µs per byte at 4.77 MHz (139 µs at 9.54 MHz) and predicting failure at 38400. The 38400 run at 4.77 MHz was clean, and the 57600 run failed, which put the real cost between 173 and 260 µs. The check runs at the closing flag, after the last byte, so it never competes with incoming bytes. `BENCH` now times it separately and leaves it out of the per-byte figure (187.4 + 104.3 ms ÷ 1040 bytes ≈ 288 µs, matching the old figure within timer resolution). It also repeats each test for at least two seconds, so fast machines get a figure: on `smokey` (P75) the old version finished within one timer tick and reported nothing.
 
 ## First end-to-end emulator milestone
 

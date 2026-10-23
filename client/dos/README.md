@@ -12,7 +12,8 @@ It waits for the host (`sprocket hello` on Linux), answers until the host sends 
 
 - **Polled UART, no interrupts, no FIFO.** The UART's interrupts are left off and its FIFO, if any, is disabled. That works because the host sends one request at a time and waits: the line is silent whenever the client is busy. The port's base address comes from the BIOS data area, so any COM1 to COM4 the BIOS found will work.
 - **No screen output between sending a response and reading the next request.** Scrolling the screen on an 8088 is slow enough to overrun a UART without a FIFO, and the host sends its next request as soon as it has a response. The client prints before it sends.
-- **Fast enough per byte.** With a polled UART and no FIFO, the client must finish with each byte before the next one arrives: 1041 µs at 9600 baud. On a 4.77 MHz 8088, the receive path (poll the UART, feed the decoder) takes about 330 µs per byte, measured by `BENCH.EXE` under 86Box. That's 3.1× headroom at 9600 and 1.5× at 19200; 38400 is too fast for that CPU. Nothing else runs per byte: the timer and keyboard are checked only while the line is idle. The end of a 1 KB frame (CRC check, response) takes about 330 ms, while the host is waiting.
+- **Fast enough per byte.** With a polled UART and no FIFO, the client must finish with each byte before the next one arrives: 1041 µs at 9600 baud, 260 µs at 38400. On a NuXT's NEC V20 at 4.77 MHz, the receive path (poll the UART, feed the decoder) takes about 187 µs per byte, measured by `BENCH.EXE`: 1.3× headroom at 38400, and too slow for 57600. At 9.54 MHz it takes 93 µs, enough for 57600 but not 115200. Real runs failed at exactly those limits. Nothing else runs per byte: the timer and keyboard are checked only while the line is idle.
+- **Frame work waits for the line to go quiet.** The CRC of a frame is checked when its closing flag arrives, and the response is built after that, while the host waits. On the V20 at 4.77 MHz the check takes about 104 ms for a 1 KB frame, most of the 120 ms the host waits for each reply. Encoding the response happens as it is sent, so it does not add to that wait.
 - **Bounded memory.** One 1030-byte receive buffer and one 1028-byte response buffer, which is also the duplicate cache. The CRC-16 uses a 32-byte nibble table.
 - **Portable core.** `frame.c` (framing and CRC) and `proto.c` (sessions, duplicates, requests) do no I/O. `dosport.c` is the DOS platform layer; `posixport.c` is a Linux tty/PTY layer, so the same core runs on the host for tests.
 
@@ -37,14 +38,16 @@ make test            # host tests against ../../tests/vectors/
 make host            # build/sprocket-client, the same client on a Linux tty/PTY
 ```
 
-The build treats all warnings as errors and optimizes for speed (`-ox`) without per-call stack checks (`-s`; the code has no recursion). On a 4.77 MHz 8088 those two settings cut the receive path from about 590 to 390 µs per byte. The executable is about 13 KB.
+The build treats all warnings as errors and optimizes for speed (`-ox`) without per-call stack checks (`-s`; the code has no recursion). Under 86Box as a 4.77 MHz 8088, those two settings cut `BENCH`'s per-byte figure from about 590 to 330 µs. Those figures come from an earlier `BENCH` that also counted each frame's CRC check as per-byte time, so they overstate the receive path; they still show the relative gain. The executable is about 13 KB.
 
 ## Testing
 
 - **`make test`** builds the C core with the host compiler and runs it against the same fixtures as the Rust host: every valid and malformed frame in `tests/vectors/`, plus the request/response pairs (`HELLO` → `HELLO_REPLY`, `PING` → its reply, an unknown type → the `ERROR` fixture), duplicate and refusal handling, sessions, and version mismatch.
 - **Host end to end:** run `build/sprocket-client` on one end of a `socat` PTY pair and `sprocket hello` on the other.
 - **DOSBox-X:** `test/dosbox-hello.sh [baud]` runs the real `SPROCKET.EXE` under DOSBox-X as an 8086, with COM1 as a TCP null-modem, and runs `sprocket hello` against it (build the host first with `cargo build`). It then checks the client's counters: one frame per request, nothing dropped or repeated, no receive errors. `FAULT=1` inserts `test/fault-relay.py`, which corrupts one byte of the first `PING` and one of its response, and expects exactly one dropped frame and one repeated request answered from the cache. Both modes pass at 9600, 38400 and 115200 baud. DOSBox-X's CPU speed and UART timing are not representative, so this checks function, not speed.
-- **86Box, IBM XT (8088, 4.77 MHz):** `BENCH.EXE` gives the timing above. End to end, `sprocket hello` works through `test/pace-relay.py`, which paces the host's bytes like a real line; see [testing](../../docs/testing.md#86box-ibm-xt-8088-at-477-mhz) for the setup and its limits.
+- **`BENCH.EXE`** (`make bench`) times the receive path, the frame check and the end of a frame on the machine it runs on, and prints the margin at each baud rate. Run it with nothing sending on the serial port; it reads the port's status register but sends nothing.
+- **Real hardware:** on a NuXT (NEC V20) at 4.77 and 9.54 MHz, `sprocket hello --pings 20` ran clean at every baud rate `BENCH.EXE` marked as keeping up, and failed at the first rate it marked too slow. See [testing](../../docs/testing.md#real-hardware-nuxt-phaistos).
+- **86Box, IBM XT (8088, 4.77 MHz):** end to end, `sprocket hello` works through `test/pace-relay.py`, which paces the host's bytes like a real line; see [testing](../../docs/testing.md#86box-ibm-xt-8088-at-477-mhz) for the setup and its limits.
 
 ## Licensing
 

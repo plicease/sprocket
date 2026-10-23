@@ -2,7 +2,7 @@
 
 SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging project for vintage computers. A modern host performs complex operations; small platform-specific clients provide access to vintage hardware.
 
-**Status (2026-10-21):** in development. The standard-protocol modes (`sprocket send`, `sprocket serve`) are implemented and validated on real hardware. Native protocol v1 is ratified; its Milestone 2 handshake is implemented on the host and in the DOS client and tested in emulators, but not yet on real hardware. Native file transfer and disk imaging are designed but not implemented. See [validation status](#validation-status) and the [roadmap](docs/roadmap.md).
+**Status (2026-10-23):** in development. The standard-protocol modes (`sprocket send`, `sprocket serve`) are implemented and validated on real hardware. Native protocol v1 is ratified; its Milestone 2 handshake is implemented on the host and in the DOS client, tested in emulators, and validated on a NuXT (NEC V20) at up to 57600 baud. Native file transfer and disk imaging are designed but not implemented. See [validation status](#validation-status) and the [roadmap](docs/roadmap.md).
 
 ## Design documents
 
@@ -75,7 +75,7 @@ The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-2
 sprocket hello --port /dev/ttyS0 --baud 9600
 ```
 
-`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET COM1 9600` (port and baud as needed). Validation so far is listed below; it has not yet run on real hardware.
+`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET COM1 9600` (port and baud as needed). Validation so far is listed below. On a slow machine, run `BENCH.EXE` first: it shows the fastest baud rate the client can keep up with there.
 
 ### Validation status
 
@@ -93,8 +93,8 @@ Not yet validated on real hardware: cancellation through the `serve` menu or dur
 
 - Host and client tests: the Rust host against a mock client (`cargo test`), and the DOS client's C core against the shared `tests/vectors/` fixtures (`make test` in `client/dos`).
 - The C client built for Linux, over a PTY pair.
-- Emulators, 2026-10-21: `SPROCKET.EXE` under DOSBox-X (8086) completed the handshake and 1 KB pings at 9600, 38400 and 115200 baud with no dropped frames or receive errors (`client/dos/test/dosbox-hello.sh`). With one byte corrupted in each direction, the client dropped the damaged request and answered the host's retransmitted request from its duplicate cache. Under 86Box as an IBM XT (8088 at 4.77 MHz) the handshake and 1 KB pings also completed, and the client's receive path measured about 330 µs per byte, a 3× margin at 9600 baud. 86Box's serial console delivers bytes in bursts, so back-to-back 9600 baud is not yet shown.
-- Real hardware: not yet run.
+- Emulators, 2026-10-21: `SPROCKET.EXE` under DOSBox-X (8086) completed the handshake and 1 KB pings at 9600, 38400 and 115200 baud with no dropped frames or receive errors (`client/dos/test/dosbox-hello.sh`). With one byte corrupted in each direction, the client dropped the damaged request and answered the host's retransmitted request from its duplicate cache. Under 86Box as an IBM XT (8088 at 4.77 MHz) the handshake and 1 KB pings also completed. 86Box's serial console delivers bytes in bursts, so it could not show sustained back-to-back bytes.
+- Real hardware, 2026-10-23: `sprocket hello --pings 20` on `twintwist` (`/dev/ttyS0`) to `SPROCKET.EXE` on `phaistos`, a NuXT with an NEC V20, over a null-modem cable. At 4.77 MHz it ran clean at 9600, 19200 and 38400 baud and failed at 57600; at 9.54 MHz it ran clean up to 57600 and failed at 115200. Each clean run ended with `22 frames, 0 dropped, 0 repeated, 0 receive errors` and took the same time for every ping. `BENCH.EXE` predicted exactly these limits: 187 µs per byte at 4.77 MHz and 93 µs at 9.54 MHz. `smokey` (P75) has not yet run the native client.
 
 See [testing](docs/testing.md) for details.
 

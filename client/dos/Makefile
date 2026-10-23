@@ -27,8 +27,9 @@ build:
 
 # -0: 8086 instructions only; -ms: small model; -wx -we: all warnings, as
 # errors. -ox optimizes for speed and -s drops the stack check on every
-# call (the code has no recursion): together they cut the receive path on a
-# 4.77 MHz 8088 from about 590 to 330 us per byte (test/bench.c).
+# call (the code has no recursion): together they cut BENCH's per-byte figure
+# under 86Box (4.77 MHz 8088) from about 590 to 330 us (test/bench.c, in a
+# version that also counted the frame check).
 DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we
 
 build/SPROCKET.EXE: $(CORE) src/dosport.c src/main.c $(HEADERS) | build
