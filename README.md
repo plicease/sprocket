@@ -2,13 +2,15 @@
 
 SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging project for vintage computers. A modern host performs complex operations; small platform-specific clients provide access to vintage hardware.
 
-**Status (2026-10-23):** in development. The standard-protocol modes (`sprocket send`, `sprocket serve`) are implemented and validated on real hardware. Native protocol v1 is ratified; its Milestone 2 handshake is implemented on the host and in the DOS client, tested in emulators, and validated on a NuXT (NEC V20) at up to 57600 baud. Native file transfer and disk imaging are designed but not implemented. See [validation status](#validation-status) and the [roadmap](docs/roadmap.md).
+**Status (2026-10-23):** in development. The standard-protocol modes (`sprocket send`, `sprocket serve`) are implemented and validated on real hardware. Native protocol v1 is ratified; its Milestone 2 handshake is implemented on the host and in the DOS program, tested in emulators, and validated on a NuXT (NEC V20) at up to 57600 baud. Native file transfer (proposed protocol v1.1) is implemented in both directions and either role on Linux and DOS, and tested on Linux and in DOSBox-X, but not yet on real hardware. Disk imaging is designed but not implemented. See [validation status](#validation-status) and the [roadmap](docs/roadmap.md).
 
 ## Design documents
 
 - [Architecture](docs/architecture.md): scope, components, platform independence, milestones.
 - [Protocol](docs/protocol.md): requirements for the native protocol.
 - [Protocol v1](docs/protocol-v1.md): the ratified native wire specification: framing, sequencing, messages and test vectors.
+- [Protocol v1.1](docs/protocol-v1.1.md): proposed: file trees (`STAT`, `DIR_LIST`, `FILE_READ`) and either side in either role.
+- [File-transfer UI](docs/sprocket-file-transfer-ui.md): the shell shared by terminal mode and the native clients.
 - [Bootstrap and transfers](docs/bootstrap.md): standard protocols, smart terminal mode, first installation, upgrades, recovery.
 - [Disk imaging](docs/imaging.md): addressing, integrity, error reporting, safety.
 - [Licensing](docs/licensing.md): MIT project policy and third-party obligations.
@@ -23,9 +25,9 @@ SPROCKET offers three complementary modes. None replaces another; each needs les
 | --- | --- | --- | --- |
 | Bootstrap send | `sprocket send` | Any terminal program with an XMODEM (or ZMODEM) receiver | XMODEM: no (padded). ZMODEM: yes |
 | Smart terminal | `sprocket serve --mode terminal` | Any terminal program; ZMODEM optional | ZMODEM: yes. XMODEM: no |
-| Native SPROCKET | `sprocket hello` (more planned) | The SPROCKET client (`SPROCKET.EXE`) | Yes, plus disk imaging |
+| Native SPROCKET | `sprocket client`, `sprocket serve`, `sprocket hello` | `SPROCKET.EXE` | Yes, with dates (disk imaging planned) |
 
-All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. `send`, `serve` and `hello` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
+All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. `send`, `serve`, `client` and `hello` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
 
 ### Bootstrap send
 
@@ -73,13 +75,23 @@ Windows 95 HyperTerminal auto-downloads ZMODEM (verified on real hardware), but 
 
 ### Native SPROCKET
 
-The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-21. The Milestone 2 handshake is implemented on both sides: the host's `sprocket hello`, and the DOS client [`SPROCKET.EXE`](client/dos/README.md) (Open Watcom, 8086, polled UART). File transfer and disk imaging are not implemented yet. See the [roadmap](docs/roadmap.md).
+The native protocol is [protocol v1](docs/protocol-v1.md), ratified on 2026-10-21, with the file trees of [protocol v1.1](docs/protocol-v1.1.md) (proposed). One side is the *client*, which runs an interactive shell and makes requests; the other is the *server*, which shares a directory. Either machine can take either role, and files go both ways in one session: `get` copies from the server, `put` copies to it. The DOS side is [`SPROCKET.EXE`](client/dos/README.md) (Open Watcom, 8086, polled UART), one program with both roles. Disk imaging is not implemented yet; see the [roadmap](docs/roadmap.md).
+
+```text
+Linux server: sprocket serve --port /dev/ttyS0 --baud 38400 --root ~/dos [--writable]
+DOS client:   SPROCKET CLIENT COM1 38400
+
+DOS server:   SPROCKET SERVER COM1 38400 C:\SHARE [/W]
+Linux client: sprocket client --port /dev/ttyS0 --baud 38400
+```
+
+The client's prompt, listings and messages are those of terminal mode, with local commands added: `lls` (or `ldir`), `lcd` and `lpwd` work on the client's own directory, `get [-f] FILE` copies remote files into it and `put [-f] FILE` sends local files to the server's current directory. Both take `*` and `?` wildcards, refuse to replace an existing file unless given `-f`, and stop a batch at the first file that fails. Files are written under a temporary name and renamed into place once complete and checked (with a CRC-32 for `put`), and keep their modification time. A server shares its directory read-only unless started with `--writable` (`/W` on DOS); a DOS server replacing a file keeps the old one as `NAME.BAK`, and refuses names that are not 8.3. The Linux client has Tab completion, history and line editing, as in terminal mode; the DOS client has plain line input (Backspace, Esc to clear the line, Ctrl-D to end), and can read commands from a file (`SPROCKET CLIENT COM1 38400 < CMDS.TXT`). Esc or Ctrl-C stops a long listing or a transfer.
 
 ```sh
 sprocket hello --port /dev/ttyS0 --baud 9600
 ```
 
-`hello` calls the client (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET SERVER COM1 9600` (port and baud as needed). Validation so far is listed below. On a slow machine, run `BENCH.EXE` first: it shows the fastest baud rate the client can keep up with there.
+`hello` calls a server (repeating `HELLO` for up to `--wait` seconds, default 60), then shows its version, platform, maximum payload and capabilities. It sends `--pings` full-size pings (default 3) that carry every byte value, so frame escaping is exercised in both directions, and then closes the session. On the vintage machine, run `SPROCKET SERVER COM1 9600` (port and baud as needed). Validation so far is listed below. On a slow machine, run `BENCH.EXE` first: it shows the fastest baud rate SPROCKET can keep up with there.
 
 ### Validation status
 
@@ -95,8 +107,9 @@ Not yet validated on real hardware: cancellation through the `serve` menu or dur
 
 **Native protocol (`sprocket hello` and `SPROCKET.EXE`).**
 
-- Host and client tests: the Rust host against a mock client (`cargo test`), and the DOS client's C core against the shared `tests/vectors/` fixtures (`make test` in `client/dos`).
-- The C client built for Linux, over a PTY pair.
+- Host and client tests: the Rust host against a mock client (`cargo test`), and the DOS program's C code against the shared `tests/vectors/` and `tests/shell/` fixtures (`make test` in `client/dos`).
+- The C program built for Linux, over a PTY pair.
+- File transfer, 2026-10-23: every pairing of the Rust and C clients and servers over a Linux PTY pair, and `SPROCKET.EXE` under DOSBox-X (8086) as server against `sprocket client` (`client/dos/test/dosbox-tree.sh`) and as client against `sprocket serve` (`client/dos/test/dosbox-client.sh`), at 38400 baud: listings, wildcard downloads, uploads, replacing with and without `-f`, dates, and names DOS cannot hold. Not yet run on real hardware.
 - Emulators, 2026-10-21: `SPROCKET.EXE` under DOSBox-X (8086) completed the handshake and 1 KB pings at 9600, 38400 and 115200 baud with no dropped frames or receive errors (`client/dos/test/dosbox-hello.sh`). With one byte corrupted in each direction, the client dropped the damaged request and answered the host's retransmitted request from its duplicate cache. Under 86Box as an IBM XT (8088 at 4.77 MHz) the handshake and 1 KB pings also completed. 86Box's serial console delivers bytes in bursts, so it could not show sustained back-to-back bytes.
 - Real hardware, 2026-10-23: `sprocket hello --pings 20` on `twintwist` (`/dev/ttyS0`) to `SPROCKET.EXE` on `phaistos`, a NuXT with an NEC V20, over a null-modem cable. At 4.77 MHz it ran clean at 9600, 19200 and 38400 baud and failed at 57600; at 9.54 MHz it ran clean up to 57600 and failed at 115200. Each clean run ended with `22 frames, 0 dropped, 0 repeated, 0 receive errors` and took the same time for every ping. `BENCH.EXE` predicted exactly these limits: 187 µs per byte at 4.77 MHz and 93 µs at 9.54 MHz. On 2026-10-22, `smokey` (P75) passed the handshake and three 1 KB pings at 9600, 38400 and 115200 baud, at 0.20 s per ping at 115200.
 
@@ -108,12 +121,13 @@ See [testing](docs/testing.md) for details.
 sprocket/
 ├── Cargo.toml          # Rust host crate (the `sprocket` command)
 ├── src/                # host: transports, XMODEM/ZMODEM senders, terminal file server,
-│   └── native/         #   trace; native protocol v1 framing, link and session layers
+│   └── native/         #   trace, native client shell; native framing, link, session, server
 ├── client/
-│   └── dos/            # SPROCKET.EXE: Open Watcom, 8086-compatible DOS client, and its tests
+│   └── dos/            # SPROCKET.EXE: Open Watcom, 8086-compatible DOS program, and its tests
 ├── docs/               # design documents and the protocol v1 specification
 └── tests/
-    └── vectors/        # protocol v1 frame fixtures shared by the Rust and C tests
+    ├── vectors/        # protocol frame fixtures shared by the Rust and C tests
+    └── shell/          # shell output fixtures (sizes, listings, help) shared the same way
 ```
 
 Other clients will be sibling directories under `client/`.
@@ -124,4 +138,4 @@ Other clients will be sibling directories under `client/`.
 - **Proposal**: an implementation choice requiring review.
 - **Open question**: intentionally undecided.
 
-See the documents for details. Native protocol v1 was ratified on 2026-10-21. Its Milestone 2 subset (`HELLO`, `PING`, `CLOSE`) is implemented in the host and the DOS client; file transfer and disk imaging are not implemented yet.
+See the documents for details. Native protocol v1 was ratified on 2026-10-21. Its Milestone 2 subset (`HELLO`, `PING`, `CLOSE`) and the proposed v1.1 file trees are implemented on Linux and DOS; disk imaging is not implemented yet.

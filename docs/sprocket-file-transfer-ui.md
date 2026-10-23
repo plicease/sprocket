@@ -1,6 +1,6 @@
 # Sprocket file-transfer UI design
 
-**Status:** Proposed design; command names and transfer policies decided 2026-10-23  
+**Status:** Command names and transfer policies decided 2026-10-23; implemented 2026-10-23 in `sprocket serve`, `sprocket client` and `SPROCKET.EXE` (`SERVER` and `CLIENT`)  
 **Date:** 2026-10-23  
 **Scope:** Native Sprocket and terminal (XMODEM/ZMODEM) file-transfer interfaces
 

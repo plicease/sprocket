@@ -13,6 +13,8 @@ SPROCKET SERVER [port [baud [dir]]] [/W]      default: COM1 9600
 
 `SPROCKET SERVER` waits for a client (`sprocket client` or `sprocket hello` on Linux, or `SPROCKET CLIENT`), answers until the client sends `CLOSE`, and exits. Press Esc to exit early. With a directory, such as `SPROCKET SERVER COM1 38400 C:\SHARE`, the client can list and fetch the files below it; `/W` also lets the client send files there. Files arrive as `NAME.$$$` and are put in place only after their length and CRC-32 are checked; replacing a file (`put -f` on the client) keeps the old one as `NAME.BAK`. Without a directory, only `HELLO`, `PING` and `CLOSE` are answered. On exit it prints how many frames it received and dropped, how many requests were repeats, and how many UART receive errors (overruns or framing errors) it saw.
 
+**Disable write-behind disk caching while transferring files**, such as SMARTDRV's write caching. Files are written under a temporary name and put in place only once complete and checked, but that keeps a complete copy through a power failure only if the disk completes writes in the order DOS issues them, which a write-behind cache does not promise ([protocol v1](../../docs/protocol-v1.md#what-an-interrupted-commit-leaves-behind)). If a transfer to a DOS server is interrupted while a file is being replaced, the old version is in `NAME.BAK`.
+
 ## Design
 
 - **Polled UART, no interrupts, no FIFO.** The UART's interrupts are left off and its FIFO, if any, is disabled. That works because the host sends one request at a time and waits: the line is silent whenever the client is busy. The port's base address comes from the BIOS data area, so any COM1 to COM4 the BIOS found will work.
