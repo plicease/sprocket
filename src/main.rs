@@ -24,7 +24,8 @@ struct Cli {
 enum Command {
     /// Send a file to a receiver using a standard serial transfer protocol
     Send(SendArgs),
-    /// Serve a read-only file menu to a terminal program on the serial line
+    /// Serve a directory to a SPROCKET client (native mode, the default) or
+    /// to a terminal program (--mode terminal)
     Serve(ServeArgs),
     /// Connect to a SPROCKET client, show what it supports, and ping it
     Hello(HelloArgs),
@@ -58,6 +59,12 @@ struct SendArgs {
 
 #[derive(Args)]
 struct ServeArgs {
+    /// native: answer a SPROCKET client (`SPROCKET CLIENT`, `sprocket
+    /// client`). terminal: an ftp-style prompt for a terminal program, with
+    /// downloads by ZMODEM or XMODEM
+    #[arg(long, value_enum, default_value_t = Mode::Native)]
+    mode: Mode,
+
     /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
     #[arg(long)]
     port: String,
@@ -70,22 +77,35 @@ struct ServeArgs {
     #[arg(long)]
     root: PathBuf,
 
+    /// Accept files from the client (put), and let put -f replace them
+    /// (native mode). Without it the directory is read-only
+    #[arg(long)]
+    writable: bool,
+
     /// Seconds without input before a session returns to the banner
+    /// (terminal mode)
     #[arg(long, default_value_t = 600)]
     idle: u64,
 
-    /// Seconds a transfer waits for the receiver to start
+    /// Seconds a transfer waits for the receiver to start (terminal mode)
     #[arg(long, default_value_t = 60)]
     wait: u64,
 
     /// Initial line editing mode for each session (history, Tab completion,
     /// Ctrl-D logout); off suits terminals that send odd keystrokes
+    /// (terminal mode)
     #[arg(long, value_enum, default_value_t = Switch::On)]
     editing: Switch,
 
     /// Append a timestamped byte-level trace of the link to FILE
     #[arg(long, value_name = "FILE")]
     trace: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Mode {
+    Native,
+    Terminal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -160,6 +180,9 @@ fn open_link(
 }
 
 fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    if args.writable && args.mode == Mode::Terminal {
+        anyhow::bail!("--writable needs --mode native; terminal mode is always read-only");
+    }
     let root =
         Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
     let trace = open_trace(args.trace.as_ref(), "serve")?;
@@ -175,8 +198,17 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         start_timeout: Duration::from_secs(args.wait),
         editing: args.editing == Switch::On,
     };
+    let native = native::server::Options {
+        writable: args.writable,
+        ..native::server::Options::default()
+    };
+    let what = match (args.mode, args.writable) {
+        (Mode::Terminal, _) => "to a terminal program",
+        (Mode::Native, false) => "to SPROCKET clients, read-only",
+        (Mode::Native, true) => "to SPROCKET clients, writable",
+    };
     log(&format!(
-        "serving {} on {} ({} 8N1, no flow control); press Ctrl-C to stop",
+        "serving {} {what} on {} ({} 8N1, no flow control); press Ctrl-C to stop",
         root.path().display(),
         args.port,
         args.baud
@@ -186,7 +218,11 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         match open_link(&args.port, args.baud, trace.as_ref()) {
             Ok(mut link) => {
                 log(&format!("connected to {}", args.port));
-                if let Err(e) = serve::run(link.as_mut(), &root, &options, &mut log) {
+                let result = match args.mode {
+                    Mode::Terminal => serve::run(link.as_mut(), &root, &options, &mut log),
+                    Mode::Native => native::server::run(link.as_mut(), &root, &native, &mut log),
+                };
+                if let Err(e) = result {
                     log(&format!("connection lost: {e}"));
                 }
             }

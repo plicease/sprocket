@@ -22,7 +22,7 @@ SPROCKET offers three complementary modes. None replaces another; each needs les
 | Mode | Command | Vintage machine needs | Exact length and filename |
 | --- | --- | --- | --- |
 | Bootstrap send | `sprocket send` | Any terminal program with an XMODEM (or ZMODEM) receiver | XMODEM: no (padded). ZMODEM: yes |
-| Smart terminal | `sprocket serve` | Any terminal program; ZMODEM optional | ZMODEM: yes. XMODEM: no |
+| Smart terminal | `sprocket serve --mode terminal` | Any terminal program; ZMODEM optional | ZMODEM: yes. XMODEM: no |
 | Native SPROCKET | `sprocket hello` (more planned) | The SPROCKET client (`SPROCKET.EXE`) | Yes, plus disk imaging |
 
 All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default 9600). `--port` takes a serial device such as `/dev/ttyS0`, or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. `send`, `serve` and `hello` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
@@ -44,8 +44,10 @@ XMODEM is the lowest common denominator and remains the first-install path. It p
 Serve a read-only directory, browsed with ftp-style commands, to whatever terminal program the vintage machine runs:
 
 ```sh
-sprocket serve --port /dev/ttyS0 --baud 38400 --root ~/vintage/files
+sprocket serve --mode terminal --port /dev/ttyS0 --baud 38400 --root ~/vintage/files
 ```
+
+**Changed 2026-10-23:** `sprocket serve` now defaults to native mode, for the SPROCKET client. Terminal programs need `--mode terminal`.
 
 On the vintage machine, connect at the same settings and press ENTER. Then, at the `/> ` prompt:
 
@@ -57,6 +59,8 @@ On the vintage machine, connect at the same settings and press ENTER. Then, at t
 | `protocol [NAME]` | Show or set the download protocol for the session: `zmodem` (`z`, the default), `xmodem` (`x`) or `xmodem-1k` (`x-1k`). |
 | `set editing on\|off` | Turn line editing (below) on or off for the rest of the session. |
 | `pwd`, `help`, `quit` | Show the current directory, list commands, end the session (`bye`, `exit`, or Ctrl-D on an empty line also work). |
+
+The native client's commands (`put`, `lls`, `ldir`, `lcd`, `lpwd`) are recognized too, and answer, for example, `put: not available in terminal mode`; `help` lists them as unavailable. A command neither mode knows gets `Unknown command: NAME`.
 
 Names are matched ignoring case, as on DOS: `get UNZIP.EXE` finds `unzip.exe`, and `cd GAMES` shows the directory's real name in the prompt. If a directory holds names that differ only in case, the exact spelling picks one, and any other spelling is refused as ambiguous. Tab completes command names, protocol names and file names (only directories after `cd`). If several names match, a second Tab is not needed: the choices are listed and the line is redrawn. Up and Down recall the session's earlier commands; on terminals whose arrow keys send nothing, use Ctrl-P and Ctrl-N. Tab completion, history and Ctrl-D logout make up *line editing*. If a terminal sends keystrokes that confuse it, `set editing off` (or `--editing=off` on the host, which sets the starting mode for every session) leaves only typing, Backspace and Enter; all other control keys, including ESC, are ignored. The protocols:
 
