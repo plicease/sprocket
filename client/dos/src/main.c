@@ -7,6 +7,9 @@
  * directory it serves that tree (read-only unless /W); without one it
  * answers HELLO, PING and CLOSE only.
  *
+ * SPROCKET CLIENT [port [baud]] calls a server and runs the file-transfer
+ * shell (cli.c).
+ *
  * Screen output happens only before a response is sent, never between
  * sending a response and reading the next request: printing scrolls the
  * screen, which on an 8088 is slow enough to overrun a UART without a
@@ -16,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cli.h"
 #include "frame.h"
 #include "port.h"
 #include "fsys.h"
@@ -43,9 +47,12 @@ static void send_byte(uint8_t byte)
 static void usage(void)
 {
     printf("SPROCKET %s: native file transfer over a serial line.\n\n", VERSION);
+    printf("  SPROCKET CLIENT [port [baud]]\n");
+    printf("      Call a server on port (default COM1 9600) and copy files to\n");
+    printf("      and from it.\n");
     printf("  SPROCKET SERVER [port [baud [dir]]] [/W]\n");
-    printf("      Answer the host on port (default COM1 9600). With dir, serve\n");
-    printf("      its files; /W also lets the host write them.\n");
+    printf("      Answer a client on port. With dir, serve its files; /W also\n");
+    printf("      lets the client write them.\n");
 }
 
 /* arg is option, ignoring ASCII case; option is in upper case. */
@@ -134,7 +141,7 @@ static int server(int argc, char **argv)
     if (dir != NULL) {
         printf("Serving %s%s.\n", dir, writable ? ", writable" : ", read-only");
     }
-    printf("Waiting for the host; press Esc to exit.\n");
+    printf("Waiting for a client; press Esc to exit.\n");
 
     for (;;) {
         if (port_get(&byte)) {
@@ -184,7 +191,7 @@ static int server(int argc, char **argv)
     }
     port_close();
     if (cl.closed) {
-        printf("Session %04X closed by the host.\n", cl.session);
+        printf("Session %04X closed by the client.\n", cl.session);
     }
     printf("%lu frames, %lu dropped, %u repeated, %u receive errors.\n",
            (unsigned long)frames, (unsigned long)dropped, cl.duplicates,
@@ -192,10 +199,23 @@ static int server(int argc, char **argv)
     return 0;
 }
 
+static int client(int argc, char **argv)
+{
+    if (argc > 2 || (argc > 0 && argv[0][0] == '/' && argv[0][1] != '\0' && argv[0][2] == '\0')) {
+        usage();
+        return 1;
+    }
+    return cli_run(argc > 0 ? argv[0] : "COM1", argc > 1 ? atol(argv[1]) : 9600L, resp_buf,
+                   rx_buf, MAX_PAYLOAD, 0);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && is_option(argv[1], "SERVER")) {
         return server(argc - 2, argv + 2);
+    }
+    if (argc > 1 && is_option(argv[1], "CLIENT")) {
+        return client(argc - 2, argv + 2);
     }
     usage();
     return 1;

@@ -115,8 +115,8 @@ grep -q "File exists" "$work/client.txt" || fail "put without -f did not refuse"
 cmp -s "$share/README.TXT" "$work/local/readme.txt" || fail "README.TXT was not replaced"
 grep -q "old readme" "$share/README.BAK" 2>/dev/null || fail "README.BAK does not hold the old file"
 ls "$share" | grep -q '\$\$\$' && fail "a temporary file was left behind"
-grep -q "closed by the host" "$work/c/OUT2.TXT" 2>/dev/null ||
-    fail "the server did not report the session closed by the host"
+grep -q "closed by the client" "$work/c/OUT2.TXT" 2>/dev/null ||
+    fail "the server did not report the session closed by the client"
 
 if [ "$status" = 0 ]; then
     echo "PASS"

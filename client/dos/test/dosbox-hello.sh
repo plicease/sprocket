@@ -110,8 +110,8 @@ fail() {
     status=1
 }
 
-grep -q "closed by the host" "$work/OUT.TXT" 2>/dev/null ||
-    fail "the client did not report the session closed by the host"
+grep -q "closed by the client" "$work/OUT.TXT" 2>/dev/null ||
+    fail "SPROCKET did not report the session closed by the client"
 
 # "N frames, N dropped, N repeated, N receive errors."
 counters=$(tr -d '\r' < "$work/OUT.TXT" 2>/dev/null |

@@ -414,6 +414,7 @@ int list_entry(uint16_t mark, const char *name, uint8_t len, uint8_t dir, uint32
     uint16_t need = (uint16_t)(RECORD + len);
     uint16_t at;
     uint8_t *p;
+    int d;
 
     if (top < used + need) {
         return 0;
@@ -421,7 +422,12 @@ int list_entry(uint16_t mark, const char *name, uint8_t len, uint8_t dir, uint32
     /* Find the first entry that sorts after this one; it goes before. */
     for (at = top; at < mark; at = (uint16_t)(at + RECORD + p[5])) {
         p = arena + at;
-        if (order((const char *)p + RECORD, p[5], name, len) > 0) {
+        d = order((const char *)p + RECORD, p[5], name, len);
+        if (d == 0) {
+            /* A repeat, from a directory changing between pages. */
+            return 1;
+        }
+        if (d > 0) {
             break;
         }
     }

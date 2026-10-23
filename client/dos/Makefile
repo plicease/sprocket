@@ -2,8 +2,8 @@
 #
 # make          build build/SPROCKET.EXE with Open Watcom (8086, small model)
 # make bench    build build/BENCH.EXE, which times the receive path on DOS
-# make test     build and run the host tests against tests/vectors/
-# make host     build build/sprocket-client, the client for a Linux tty/PTY
+# make test     build and run the host tests against tests/vectors/ and tests/shell/
+# make host     build build/sprocket-client, the same program for a Linux tty/PTY
 #
 # WATCOM is the Open Watcom install directory.
 
@@ -20,6 +20,7 @@ VECTORS := ../../tests/vectors
 SHELL_FIXTURES := ../../tests/shell
 CORE := src/frame.c src/proto.c
 TREE := src/tree.c src/crc32.c
+CLIENT := src/cli.c src/req.c src/shell.c
 HEADERS := $(wildcard src/*.h)
 
 all: build/SPROCKET.EXE
@@ -29,13 +30,15 @@ build:
 
 # -0: 8086 instructions only; -ms: small model; -wx -we: all warnings, as
 # errors. -ox optimizes for speed and -s drops the stack check on every
-# call (the code has no recursion): together they cut BENCH's per-byte figure
-# under 86Box (4.77 MHz 8088) from about 590 to 330 us (test/bench.c, in a
-# version that also counted the frame check).
-DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we
+# call: together they cut BENCH's per-byte figure under 86Box (4.77 MHz
+# 8088) from about 590 to 330 us (test/bench.c, in a version that also
+# counted the frame check). Without the check the stack must be big enough
+# by design: the only recursion is ls -R, at most 32 levels of a small
+# frame, so -k8192 gives a stack of 8 KB, several times what is used.
+DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we -k8192
 
-DOS_SRC := $(CORE) $(TREE) src/dosfs.c src/dosport.c src/main.c
-HOST_SRC := $(CORE) $(TREE) src/posixfs.c src/posixport.c src/main.c
+DOS_SRC := $(CORE) $(TREE) $(CLIENT) src/dosfs.c src/dosport.c src/main.c
+HOST_SRC := $(CORE) $(TREE) $(CLIENT) src/posixfs.c src/posixport.c src/main.c
 
 build/SPROCKET.EXE: $(DOS_SRC) $(HEADERS) | build
 	cd build && $(WCL) $(DOS_CFLAGS) -fe=SPROCKET.EXE $(addprefix ../,$(DOS_SRC))
