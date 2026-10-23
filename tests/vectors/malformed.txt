@@ -1,0 +1,75 @@
+# Native protocol v1 malformed and edge-case frames (docs/protocol-v1.md section 7).
+# wire: bytes fed to a decoder that starts fresh; max: the decoder's maximum
+# payload (default 4090); expect: each result in order, either "frame" and
+# the unescaped body (header and payload, no CRC), or "drop" and a reason:
+# too-short, bad-crc, bad-escape, aborted, too-long. No expect lines means
+# no result.
+
+name   bit_flip
+note   one payload bit flipped
+wire   7e 02 3c 5a 01 7d 5e 7d 5d 01 ff 3f 8d 7e
+expect drop bad-crc
+
+name   cut_short
+note   HELLO cut short by 7E
+wire   7e 01 3c 5a 00 53 50 52 4b 01 7e
+expect drop bad-crc
+
+name   too_short
+note   fewer than 6 unescaped bytes
+wire   7e 01 02 03 04 05 7e
+expect drop too-short
+
+name   abort
+note   7D 7E aborts the frame; the 7E starts the next one
+wire   7e 01 3c 7d 7e fe 3c 5a 03 04 d8 7e
+expect drop aborted
+expect frame fe 3c 5a 03
+
+name   bad_escape
+note   7D followed by a byte other than 5E or 5D
+wire   7e 01 3c 5a 7d 41 00 00 00 00 00 7e
+expect drop bad-escape
+
+name   too_long
+note   payload of 129 bytes over a maximum of 128
+wire   7e 02 3c 5a 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 c4 f6 7e
+max    128
+expect drop too-long
+
+name   fits
+note   payload of exactly the maximum, 128 bytes
+wire   7e 02 3c 5a 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 45 76 7e
+max    128
+expect frame 02 3c 5a 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+name   leading_garbage
+note   garbage before the first delimiter is ignored
+wire   41 54 5a 0d 7e fe 3c 5a 03 04 d8 7e
+expect frame fe 3c 5a 03
+
+name   repeated_flags
+note   repeated delimiters are empty frames and ignored
+wire   7e 7e 7e 7e fe 3c 5a 03 04 d8 7e 7e 7e
+expect frame fe 3c 5a 03
+
+name   only_flags
+note   delimiters alone produce nothing
+wire   7e 7e 7e
+
+name   shared_flag
+note   back-to-back frames may share one delimiter
+wire   7e fe 3c 5a 03 04 d8 7e 02 3c 5a 01 7d 5e 7d 5d 00 ff 3f 8d 7e
+expect frame fe 3c 5a 03
+expect frame 02 3c 5a 01 7e 7d 00 ff
+
+name   garbage_between
+note   noise between frames is dropped, the next frame is accepted
+wire   7e fe 3c 5a 03 04 d8 7e 41 42 7e 02 3c 5a 01 7d 5e 7d 5d 00 ff 3f 8d 7e
+expect frame fe 3c 5a 03
+expect drop too-short
+expect frame 02 3c 5a 01 7e 7d 00 ff
+
+name   unterminated
+note   a frame with no closing delimiter produces nothing yet
+wire   7e 01 3c 5a 00 53 50 52 4b 01 00 00 04 ba 20
