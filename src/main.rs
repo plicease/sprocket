@@ -219,6 +219,12 @@ struct ImageArgs {
     #[arg(long, value_name = "C/H/S", value_parser = parse_geometry)]
     geometry: Option<native::storage::Geometry>,
 
+    /// Image by a conventional PC floppy format's geometry: 360 (40/2/9),
+    /// 720 (80/2/9), 1200 (80/2/15) or 1440 (80/2/18); also 360k, 720k,
+    /// 1.2m and 1.44m. The disk need not really be in that format
+    #[arg(long, value_name = "FORMAT", value_parser = parse_format, conflicts_with = "geometry")]
+    format: Option<native::storage::Geometry>,
+
     /// Once every unit has been read, reread failed, suspect and
     /// conflicting units in up to N passes
     #[arg(long, default_value_t = 0, value_name = "N")]
@@ -497,6 +503,7 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
         .find(|d| d.device == device)
         .with_context(|| format!("the server has no device {device}; see --list"))?;
     let paths = Paths::new(output);
+    let mut geometry = args.geometry.or(args.format);
     if !paths.map.exists() {
         if paths.image.exists() {
             anyhow::bail!(
@@ -504,51 +511,65 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
                 paths.image.display()
             );
         }
-        // A floppy's geometry is probed by the client, and can be wrong.
+        // A floppy's geometry is probed by the client, and can be wrong:
+        // unless the operator gave one, propose it and let them choose.
         let probed = d.kind == native::storage::DiskKind::Removable && d.chs();
-        let (geometry, note) = match (args.geometry, d.geometry.filter(|_| d.chs())) {
-            (Some(g), _) => (Some(g), ""),
-            (None, Some(g)) if probed => (
-                Some(g),
-                ", as probed from the inserted disk (give --geometry C/H/S for another)",
-            ),
-            (None, g) => (g, ""),
-        };
-        if probed && args.geometry.is_none() && args.yes {
+        let given = args.geometry.or(args.format);
+        if probed && given.is_none() && args.yes {
             let g = d.geometry.expect("probed geometry");
             anyhow::bail!(
                 "the geometry of {}, {}/{}/{}, was probed from the inserted disk and may be \
-                 wrong; check it, and give it with --geometry C/H/S to image without asking",
+                 wrong; check it, and give it with --format or --geometry to image without asking",
                 d.label,
                 g.cylinders,
                 g.heads,
                 g.sectors
             );
         }
-        let units = match args.geometry {
-            Some(g) => u64::from(g.units()),
-            None => u64::from(d.unit_count),
-        };
-        let bytes = units * u64::from(d.unit_size);
-        let wire = bytes * 10 / u64::from(args.baud.max(1));
-        let by = geometry.map_or(String::new(), |g| {
-            format!(
-                " by geometry {}/{}/{}{note}",
-                g.cylinders, g.heads, g.sectors
-            )
-        });
-        let prompt = format!(
-            "image device {} ({}, {}){by} into {} (at least {} on the wire at {} baud)?",
-            d.device,
-            d.label,
-            size(bytes),
-            paths.image.display(),
-            duration(wire),
-            args.baud
-        );
-        if !args.yes && !ask(&prompt) {
-            anyhow::bail!("not started");
+        let mut chosen = given;
+        loop {
+            let geometry = chosen.or(d.geometry.filter(|_| d.chs()));
+            let units = chosen.map_or(u64::from(d.unit_count), |g| u64::from(g.units()));
+            let bytes = units * u64::from(d.unit_size);
+            let wire = bytes * 10 / u64::from(args.baud.max(1));
+            let by = geometry.map_or(String::new(), |g| {
+                format!(
+                    " by geometry {}/{}/{}{}",
+                    g.cylinders,
+                    g.heads,
+                    g.sectors,
+                    if probed && chosen.is_none() {
+                        " (probed from the inserted disk)"
+                    } else {
+                        ""
+                    }
+                )
+            });
+            let prompt = format!(
+                "image device {} ({}, {}){by} into {} (at least {} on the wire at {} baud)?",
+                d.device,
+                d.label,
+                size(bytes),
+                paths.image.display(),
+                duration(wire),
+                args.baud
+            );
+            if args.yes {
+                break;
+            }
+            if !probed || chosen.is_some() {
+                if !ask(&prompt) {
+                    anyhow::bail!("not started");
+                }
+                break;
+            }
+            match ask_geometry(&prompt) {
+                Some(Choice::Yes) => break,
+                Some(Choice::Geometry(g)) => chosen = Some(g),
+                None => anyhow::bail!("not started"),
+            }
         }
+        geometry = chosen;
     }
 
     let capture_options = capture::Options {
@@ -556,7 +577,7 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
         retries: args.retries,
         max_units: args.max_units,
         recover: args.recover,
-        geometry: args.geometry,
+        geometry,
         session: session::Options {
             previous_session: Some(listed),
             ..options
@@ -724,6 +745,66 @@ fn describe_disk(d: &native::storage::Descriptor) -> String {
         ));
     }
     text
+}
+
+/// The conventional IBM PC floppy formats, for --format: names and
+/// geometry.
+const FLOPPY_FORMATS: [(&[&str], u16, u8, u8); 4] = [
+    (&["360", "360k", "360kb", "360kib"], 40, 2, 9),
+    (&["720", "720k", "720kb", "720kib"], 80, 2, 9),
+    (&["1200", "1.2m", "1.2mb", "1.2mib", "1200k"], 80, 2, 15),
+    (&["1440", "1.44m", "1.44mb", "1.44mib", "1440k"], 80, 2, 18),
+];
+
+/// A floppy format's name, as for --format.
+fn parse_format(text: &str) -> Result<native::storage::Geometry, String> {
+    let name = text.trim().to_ascii_lowercase();
+    FLOPPY_FORMATS
+        .iter()
+        .find(|f| f.0.contains(&name.as_str()))
+        .map(
+            |&(_, cylinders, heads, sectors)| native::storage::Geometry {
+                cylinders,
+                heads,
+                sectors,
+                first_sector: 1,
+            },
+        )
+        .ok_or_else(|| format!("unknown format {text:?}; expected 360, 720, 1200 or 1440"))
+}
+
+/// An answer to the geometry prompt.
+enum Choice {
+    Yes,
+    Geometry(native::storage::Geometry),
+}
+
+/// Ask whether to image by a proposed geometry, taking a format name or
+/// C/H/S instead of yes; `None` for no.
+fn ask_geometry(prompt: &str) -> Option<Choice> {
+    let options = "[y/N, or 360, 720, 1.2m, 1.44m or C/H/S for another geometry]";
+    if !io::stdin().is_terminal() {
+        eprintln!("{prompt} {options} no (not a terminal; use --yes)");
+        return None;
+    }
+    loop {
+        eprint!("{prompt} {options} ");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).unwrap_or(0) == 0 {
+            return None;
+        }
+        let answer = answer.trim();
+        match answer.to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Some(Choice::Yes),
+            "" | "n" | "no" => return None,
+            _ => {}
+        }
+        match parse_format(answer).or_else(|_| parse_geometry(answer)) {
+            Ok(g) => return Some(Choice::Geometry(g)),
+            Err(_) => eprintln!("not understood: {answer:?}"),
+        }
+    }
 }
 
 /// `C/H/S`, as for --geometry.
@@ -926,4 +1007,51 @@ fn send_zmodem(
     let summary = summary.context("ZMODEM transfer failed")?;
     eprintln!("transfer complete: {} bytes", summary.bytes);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chs(g: native::storage::Geometry) -> (u16, u8, u8) {
+        (g.cylinders, g.heads, g.sectors)
+    }
+
+    #[test]
+    fn floppy_formats_by_name() {
+        for (names, geometry) in [
+            (["360", "360k", "360K"], (40, 2, 9)),
+            (["720", "720k", "720KB"], (80, 2, 9)),
+            (["1200", "1.2m", "1.2M"], (80, 2, 15)),
+            (["1440", "1.44m", "1.44MiB"], (80, 2, 18)),
+        ] {
+            for name in names {
+                assert_eq!(chs(parse_format(name).unwrap()), geometry, "{name}");
+            }
+        }
+        assert!(parse_format("2.88m").is_err());
+    }
+
+    #[test]
+    fn geometries_as_c_h_s() {
+        assert_eq!(chs(parse_geometry("80/2/18").unwrap()), (80, 2, 18));
+        assert!(parse_geometry("80/2").is_err());
+        assert!(parse_geometry("80/2/x").is_err());
+        assert!(parse_geometry("80/256/9").is_err());
+    }
+
+    #[test]
+    fn format_and_geometry_conflict() {
+        use clap::Parser;
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                ["sprocket", "image", "--device", "0", "--output", "a.img"]
+                    .iter()
+                    .chain(args),
+            )
+        };
+        assert!(parse(&["--format", "720"]).is_ok());
+        assert!(parse(&["--format", "720", "--geometry", "80/2/9"]).is_err());
+        assert!(parse(&["--format", "880"]).is_err());
+    }
 }
