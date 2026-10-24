@@ -89,7 +89,7 @@ The host's serial I/O should be separated from packet processing so protocol tes
 
 ## Open questions
 
-- Whether the host CLI should use `sprocket send`, `sprocket serve`, `sprocket image`, and `sprocket install` exactly as sketched.
+- Whether the host CLI should use `sprocket install` as sketched. (`send`, `serve`, `client` and `hello` exist; `sprocket image` is decided in [imaging](imaging.md#decisions).)
 - DOS minimum version (3.3 is a provisional target).
 - Whether future hosts on macOS/Windows are supported immediately or after Linux stabilization.
 
