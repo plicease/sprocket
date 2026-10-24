@@ -3,6 +3,7 @@
 //! capability negotiation, `PING`, `CLOSE`, and `ERROR` responses
 //! (`docs/protocol-v1.md` sections 2 to 4).
 
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{BuildHasher, RandomState};
 use std::time::{Duration, Instant};
@@ -456,6 +457,7 @@ impl<'a> Session<'a> {
     pub fn list(&mut self, path: &str) -> Result<Vec<tree::Entry>, Error> {
         let path = checked(path)?;
         let mut entries: Vec<tree::Entry> = Vec::new();
+        let mut seen = HashSet::new();
         loop {
             let index = u16::try_from(entries.len())
                 .map_err(|_| Error::Protocol("directory listing is too long".to_string()))?;
@@ -475,7 +477,7 @@ impl<'a> Session<'a> {
             // Repeats can only come from a directory changing between pages.
             let new = page.len();
             for entry in page {
-                if !entries.iter().any(|e| e.name == entry.name) {
+                if seen.insert(entry.name.clone()) {
                     entries.push(entry);
                 }
             }

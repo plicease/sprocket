@@ -2,7 +2,8 @@
 /*
  * Runs the file tree (src/tree.c, on src/posixfs.c) against the v1.1
  * fixtures in tests/vectors/frames.txt and a scratch directory: lookups,
- * paging, refusals, and writing with its temporary and backup files. Also
+ * paging (with a count of directory reads in a large directory), refusals,
+ * and writing with its temporary and backup files. Also
  * the client's placing of received files (src/place.c), with a failing
  * final rename.
  *
@@ -298,6 +299,69 @@ static void listing(void)
     CHECK(names == 5 && pages == 5, "paged listing: %d names in %d pages", names, pages);
 }
 
+/* Entries in big/, enough for several pages. */
+#define BIG 300
+
+/*
+ * A large directory: every entry listed once, over several pages, and
+ * each page and lookup reading the directory once rather than once per
+ * entry, which would take about BIG * BIG / 2 reads.
+ */
+static void big_directory(void)
+{
+    static uint8_t seen[BIG];
+    char name[16];
+    uint8_t index[2];
+    uint16_t at = 0;
+    unsigned long reads;
+    int names = 0;
+    int pages = 0;
+    int bad = 0;
+    int len;
+    int i;
+    int n;
+    uint16_t p;
+
+    mkdir(in_dir("big"), 0777);
+    for (i = 0; i < BIG; i++) {
+        snprintf(name, sizeof name, "big/F%03d.TXT", i);
+        write_file(name, "x", 1, MTIME);
+    }
+    tree_init(dir, 0);
+
+    fs_dir_reads = 0;
+    do {
+        index[0] = (uint8_t)at;
+        index[1] = (uint8_t)(at >> 8);
+        len = request(MSG_DIR_LIST, index, 2, "big", LIMIT);
+        if (len < 2 || out[1] == 0) {
+            break;
+        }
+        for (i = 0, p = 2; i < out[1]; i++) {
+            if (out[p + 10] == 8 && sscanf((const char *)out + p + 11, "F%3d", &n) == 1
+                && n >= 0 && n < BIG && !seen[n]) {
+                seen[n] = 1;
+                names++;
+            } else {
+                bad++;
+            }
+            p = (uint16_t)(p + 1 + out[p]);
+        }
+        at = (uint16_t)(at + out[1]);
+        pages++;
+    } while (out[0] & 1);
+    reads = fs_dir_reads;
+    CHECK(names == BIG && bad == 0 && pages > 2,
+          "big listing: %d names, %d unexpected, in %d pages", names, bad, pages);
+    /* Each page: the root to find big/, then big/ once (with . and ..). */
+    CHECK(reads <= (unsigned long)pages * (BIG + 2 + 16),
+          "big listing read %lu entries for %d pages", reads, pages);
+
+    fs_dir_reads = 0;
+    CHECK(stat_path("big/f299.txt") > 0, "the last entry is found");
+    CHECK(fs_dir_reads <= BIG + 2 + 16, "a lookup read %lu entries", fs_dir_reads);
+}
+
 static void writing(void)
 {
     tree_init(dir, 0);
@@ -384,6 +448,7 @@ int main(int argc, char **argv)
     fixtures();
     lookups();
     listing();
+    big_directory();
     writing();
     placing();
     remove_tree();

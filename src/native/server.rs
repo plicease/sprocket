@@ -673,6 +673,20 @@ mod tests {
     }
 
     #[test]
+    fn large_listings_are_complete_and_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..500 {
+            fs::write(tmp.path().join(format!("f{i:03}.dat")), b"x").unwrap();
+        }
+        // About six entries per page: over 80 pages.
+        connect(tmp.path(), Options::default(), 128, |s| {
+            let names: Vec<String> = s.list("/").unwrap().into_iter().map(|e| e.name).collect();
+            let expected: Vec<String> = (0..500).map(|i| format!("f{i:03}.dat")).collect();
+            assert_eq!(names, expected);
+        });
+    }
+
+    #[test]
     fn files_are_read_in_parts() {
         let tmp = tree();
         connect(tmp.path(), Options::default(), 1024, |s| {
