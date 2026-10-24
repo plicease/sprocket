@@ -153,6 +153,8 @@ pub(crate) mod memory {
         /// Takes this long to read once, as a BIOS call that blocks, then
         /// reads normally.
         Slow(Duration),
+        /// Reads as if the unit held this stamp: the disk changed.
+        Data(u32),
     }
 
     /// A disk in memory whose unit `n` holds `n` stamped into every 4
@@ -198,6 +200,11 @@ pub(crate) mod memory {
 
         pub fn fault(&self, unit: u32, fault: Fault) {
             self.faults.lock().unwrap().insert(unit, fault);
+        }
+
+        /// The unit reads cleanly from now on.
+        pub fn clear(&self, unit: u32) {
+            self.faults.lock().unwrap().remove(&unit);
         }
 
         /// The contents of unit `unit` when it reads cleanly.
@@ -294,6 +301,10 @@ pub(crate) mod memory {
                     thread::sleep(delay);
                     Ok(clean(0))
                 }
+                Some(Fault::Data(value)) => Ok(Unit::Read {
+                    code: 0,
+                    data: stamp(value, usize::from(self.unit_size)),
+                }),
                 None => Ok(clean(0)),
             }
         }
@@ -384,6 +395,22 @@ mod tests {
         assert_ne!(
             MemoryDisk::new(10, 8, None).with_seed(1).unit(2),
             disk.unit(2)
+        );
+        disk.fault(5, Fault::Data(9));
+        assert_eq!(
+            disk.read(5, 0),
+            Unit::Read {
+                code: 0,
+                data: disk.unit(9)
+            }
+        );
+        disk.clear(5);
+        assert_eq!(
+            disk.read(5, 0),
+            Unit::Read {
+                code: 0,
+                data: disk.unit(5)
+            }
         );
     }
 }

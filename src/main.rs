@@ -214,6 +214,11 @@ struct ImageArgs {
     #[arg(long, default_value_t = 0)]
     max_units: usize,
 
+    /// Once every unit has been read, reread failed, suspect and
+    /// conflicting units in up to N passes
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    recover: u32,
+
     /// Do not ask: start without confirming, and continue with a disk
     /// that cannot be verified as the one imaged before
     #[arg(long)]
@@ -511,6 +516,7 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
         device,
         retries: args.retries,
         max_units: args.max_units,
+        recover: args.recover,
         session: session::Options {
             previous_session: Some(listed),
             ..options
@@ -559,6 +565,13 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
                 line(&format!("unit {unit} could not be read (code {code:#06x})"))
             }
             capture::Event::LinkLost(why) => line(&format!("{why}; restarting the link")),
+            capture::Event::Recovering { pass, units } => line(&format!(
+                "recovery pass {pass}: rereading {units} failed, suspect or conflicting units"
+            )),
+            capture::Event::Recovered { unit } => line(&format!("unit {unit} was read")),
+            capture::Event::Conflict { unit } => line(&format!(
+                "unit {unit} read differently than before; both are kept"
+            )),
             capture::Event::Progress { counts } if tty => {
                 if shown.elapsed() >= Duration::from_millis(250) {
                     let total = counts.captured + counts.missing + counts.failed + counts.skipped;
@@ -608,6 +621,13 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
         println!(
             "{} units were read with a warning from the server (suspect)",
             c.suspect
+        );
+    }
+    if c.conflicting > 0 {
+        println!(
+            "{} units read differently on different reads (conflicting; see {})",
+            c.conflicting,
+            summary.paths.reads.display()
         );
     }
     println!(

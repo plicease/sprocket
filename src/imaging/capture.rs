@@ -8,15 +8,23 @@
 //! again. A request that gets no response leaves its units missing: the
 //! link is restarted with a new session and the capture continues, after
 //! checking that the client still has the same disk.
+//!
+//! Once every unit has been read, recovery passes (if asked for) reread
+//! the failed, suspect and conflicting units one at a time. A failed unit
+//! that now reads is captured; a suspect one that rereads the same with no
+//! status is no longer suspect; one that rereads differently becomes
+//! conflicting, with every version kept in the reread log
+//! (`NAME.img.reads`).
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::manifest::{self, Manifest};
 use super::map::{self, Counts, Entry, LoadError, Map, Mode, Print, Source, State};
+use super::reads::{self, Log};
 use crate::native::link;
 use crate::native::session::{self, ClientInfo, Session};
 use crate::native::storage::{self, Address, Descriptor, DiskKind, ReadRequest, Unit};
@@ -35,6 +43,9 @@ pub struct Options {
     pub retries: u8,
     /// Most units per request; 0 for as many as fit the payload.
     pub max_units: usize,
+    /// Recovery passes over failed, suspect and conflicting units, once
+    /// every unit has been read.
+    pub recover: u32,
     /// Sync the image and save the map at least this often.
     pub sync_every: Duration,
     /// Times in a row to restart the link after a request gets no
@@ -53,6 +64,7 @@ impl Default for Options {
             device: 0,
             retries: 3,
             max_units: 0,
+            recover: 0,
             sync_every: Duration::from_secs(2),
             reconnects: 3,
             session: session::Options::default(),
@@ -68,10 +80,11 @@ pub struct Paths {
     pub image: PathBuf,
     pub map: PathBuf,
     pub manifest: PathBuf,
+    pub reads: PathBuf,
 }
 
 impl Paths {
-    /// `NAME.img`, `NAME.img.map` and `NAME.img.json`.
+    /// `NAME.img`, `NAME.img.map`, `NAME.img.json` and `NAME.img.reads`.
     pub fn new(image: &Path) -> Self {
         let with = |ext: &str| {
             let mut name = image.as_os_str().to_os_string();
@@ -82,6 +95,7 @@ impl Paths {
             image: image.to_path_buf(),
             map: with(".map"),
             manifest: with(".json"),
+            reads: with(".reads"),
         }
     }
 }
@@ -133,6 +147,12 @@ pub enum Event {
     Progress { counts: Counts },
     /// A unit could not be read.
     UnitFailed { unit: u32, code: u16 },
+    /// A recovery pass is starting over this many units.
+    Recovering { pass: u32, units: usize },
+    /// A unit that had failed was read.
+    Recovered { unit: u32 },
+    /// A reread returned different data than an earlier read.
+    Conflict { unit: u32 },
     /// A request got no response; the link is being restarted.
     LinkLost(String),
 }
@@ -361,6 +381,11 @@ struct Capture<'o> {
     last_sync: Instant,
     /// A response arrived since the last link restart.
     progressed: bool,
+    log: Log,
+    /// Recovery passes finished.
+    passes: u32,
+    /// Units the current recovery pass has still to reread, last first.
+    queue: Vec<u32>,
     #[cfg(test)]
     responses: usize,
 }
@@ -419,12 +444,14 @@ impl<'o> Capture<'o> {
                 // A new image, or one whose map was unusable.
                 let image = if unusable.is_some() {
                     OpenOptions::new()
+                        .read(true)
                         .write(true)
                         .create(true)
                         .truncate(false)
                         .open(&paths.image)?
                 } else {
                     OpenOptions::new()
+                        .read(true)
                         .write(true)
                         .create_new(true)
                         .open(&paths.image)?
@@ -446,6 +473,9 @@ impl<'o> Capture<'o> {
             dirty: true,
             last_sync: Instant::now(),
             progressed: false,
+            log: Log::open(&paths.reads)?,
+            passes: 0,
+            queue: Vec::new(),
             #[cfg(test)]
             responses: 0,
         };
@@ -581,7 +611,8 @@ impl<'o> Capture<'o> {
         Ok(())
     }
 
-    /// Read the missing units. Returns why the link was lost, if it was.
+    /// Read the missing units, then make the recovery passes. Returns why
+    /// the link was lost, if it was.
     fn run(
         &mut self,
         session: &mut Session,
@@ -600,13 +631,7 @@ impl<'o> Capture<'o> {
                         events(&Event::Progress {
                             counts: self.counts(),
                         });
-                        #[cfg(test)]
-                        {
-                            self.responses += 1;
-                            if self.options.halt_after == Some(self.responses) {
-                                return Err(Error::Halted);
-                            }
-                        }
+                        self.responded()?;
                     }
                     Err(e @ session::Error::Link(link::Error::NoResponse { .. }))
                     | Err(e @ session::Error::Link(link::Error::SessionLost)) => {
@@ -623,7 +648,179 @@ impl<'o> Capture<'o> {
                 }
             }
         }
+        self.recover(session, events)
+    }
+
+    /// Recovery passes, each rereading the units that need it one at a
+    /// time. Returns why the link was lost, if it was; the pass then
+    /// carries on where it stopped.
+    fn recover(
+        &mut self,
+        session: &mut Session,
+        events: &mut dyn FnMut(&Event),
+    ) -> Result<Option<String>, Error> {
+        while self.passes < self.options.recover {
+            if self.queue.is_empty() {
+                // The map must show what the last pass found.
+                self.flush()?;
+                self.queue = self.needing_recovery();
+                if self.queue.is_empty() {
+                    break;
+                }
+                events(&Event::Recovering {
+                    pass: self.passes + 1,
+                    units: self.queue.len(),
+                });
+                self.queue.reverse();
+            }
+            while let Some(&unit) = self.queue.last() {
+                match self.read(session, unit, 1) {
+                    Ok(units) => {
+                        self.reread(unit, &units[0], events)?;
+                        events(&Event::Progress {
+                            counts: self.counts(),
+                        });
+                        self.responded()?;
+                    }
+                    Err(e @ session::Error::Link(link::Error::NoResponse { .. }))
+                    | Err(e @ session::Error::Link(link::Error::SessionLost)) => {
+                        return Ok(Some(e.to_string()));
+                    }
+                    Err(e) => {
+                        self.finish()?;
+                        return Err(e.into());
+                    }
+                }
+                self.queue.pop();
+                if self.last_sync.elapsed() >= self.options.sync_every {
+                    self.flush()?;
+                }
+            }
+            self.passes += 1;
+        }
         Ok(None)
+    }
+
+    /// Units a recovery pass rereads: failed, suspect and conflicting.
+    fn needing_recovery(&self) -> Vec<u32> {
+        self.map
+            .ranges()
+            .iter()
+            .filter(|r| {
+                r.entry.state == State::Failed
+                    || r.entry.state == State::Captured && (r.entry.code != 0 || r.entry.conflict)
+            })
+            .flat_map(|r| r.start..r.end)
+            .collect()
+    }
+
+    /// Record a recovery pass's reread of `unit`.
+    fn reread(
+        &mut self,
+        unit: u32,
+        result: &Unit,
+        events: &mut dyn FnMut(&Event),
+    ) -> Result<(), Error> {
+        self.progressed = true;
+        let before = self.map.get(unit);
+        let mut after = Entry {
+            attempts: before.attempts + 1,
+            retries: self.options.retries,
+            ..before
+        };
+        match (before.state, result) {
+            (State::Failed, Unit::Failed { code, .. }) => {
+                events(&Event::UnitFailed { unit, code: *code });
+                after.code = *code;
+            }
+            (_, Unit::Failed { .. }) => {
+                // Still captured, with the data read before.
+            }
+            (State::Failed, Unit::Read { code, data }) => {
+                events(&Event::Recovered { unit });
+                self.write_unit(unit, data)?;
+                self.pending.push((
+                    unit,
+                    Entry {
+                        state: State::Captured,
+                        code: *code,
+                        ..after
+                    },
+                ));
+                return Ok(());
+            }
+            (_, Unit::Read { code, data }) => {
+                let held = self.read_unit(unit)?;
+                after.code = *code;
+                if !before.conflict && *data == held {
+                    // The same again: suspect only if the client still
+                    // says so.
+                } else {
+                    if !before.conflict {
+                        events(&Event::Conflict { unit });
+                        self.log.append(reads::Read {
+                            unit,
+                            sha256: manifest::sha256(&held),
+                            time: None,
+                            attempt: before.attempts,
+                            retries: before.retries,
+                            code: before.code,
+                            data: held.clone(),
+                        })?;
+                    }
+                    self.log.append(reads::Read {
+                        unit,
+                        sha256: manifest::sha256(data),
+                        time: Some(manifest::iso8601(manifest::seconds(SystemTime::now()))),
+                        attempt: after.attempts,
+                        retries: after.retries,
+                        code: *code,
+                        data: data.clone(),
+                    })?;
+                    after.conflict = true;
+                    let chosen = reads::choose(self.log.reads(unit))
+                        .map(|r| r.data.clone())
+                        .unwrap_or(held.clone());
+                    if chosen != held {
+                        self.write_unit(unit, &chosen)?;
+                        self.pending.push((unit, after));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        self.map.set(unit, unit + 1, after);
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn write_unit(&mut self, unit: u32, data: &[u8]) -> io::Result<()> {
+        self.image.seek(SeekFrom::Start(
+            u64::from(unit) * u64::from(self.device.unit_size),
+        ))?;
+        self.image.write_all(data)
+    }
+
+    /// The unit as the image holds it.
+    fn read_unit(&mut self, unit: u32) -> io::Result<Vec<u8>> {
+        let mut data = vec![0; usize::from(self.device.unit_size)];
+        self.image.seek(SeekFrom::Start(
+            u64::from(unit) * u64::from(self.device.unit_size),
+        ))?;
+        self.image.read_exact(&mut data)?;
+        Ok(data)
+    }
+
+    /// Count a response, for tests that stop after so many.
+    fn responded(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        {
+            self.responses += 1;
+            if self.options.halt_after == Some(self.responses) {
+                return Err(Error::Halted);
+            }
+        }
+        Ok(())
     }
 
     /// Units to ask for at `unit`: as many as fit a response, stopping at
@@ -671,16 +868,13 @@ impl<'o> Capture<'o> {
     fn record(&mut self, first: u32, units: &[Unit]) -> Result<Vec<(u32, u16)>, Error> {
         let mut failed = Vec::new();
         self.progressed = true;
-        let unit_size = u64::from(self.device.unit_size);
         for (i, result) in units.iter().enumerate() {
             let unit = first + i as u32;
             let before = self.map.get(unit);
             let attempts = before.attempts + 1;
             match result {
                 Unit::Read { code, data } => {
-                    self.image
-                        .seek(SeekFrom::Start(u64::from(unit) * unit_size))?;
-                    self.image.write_all(data)?;
+                    self.write_unit(unit, data)?;
                     self.pending.push((
                         unit,
                         Entry {
@@ -714,10 +908,14 @@ impl<'o> Capture<'o> {
 
     /// Counts as they will be once pending units are synced.
     fn counts(&self) -> Counts {
-        let mut c = self.map.counts();
-        c.captured += self.pending.len() as u64;
-        c.missing = c.missing.saturating_sub(self.pending.len() as u64);
-        c
+        if self.pending.is_empty() {
+            return self.map.counts();
+        }
+        let mut map = self.map.clone();
+        for &(unit, entry) in &self.pending {
+            map.set(unit, unit + 1, entry);
+        }
+        map.counts()
     }
 
     /// Sync the image, then mark the units it covers as captured and save
@@ -1073,6 +1271,180 @@ mod tests {
         let (result, events) = run(&disk, &image, &options(), &mut never);
         assert!(result.unwrap().complete);
         assert!(matches!(events[0], Event::MapUnusable(_)));
+        assert_eq!(fs::read(&image).unwrap(), disk.image());
+    }
+
+    fn recovering(passes: u32) -> Options {
+        Options {
+            recover: passes,
+            ..options()
+        }
+    }
+
+    #[test]
+    fn recovery_rereads_a_failed_unit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(100, 512, None));
+        // One more failure than the first read's attempt and 3 retries.
+        disk.fault(
+            70,
+            Fault::Fail {
+                code: 0x10,
+                times: 5,
+            },
+        );
+        let (result, events) = run(&disk, &image, &recovering(2), &mut never);
+        let summary = result.unwrap();
+        assert!(summary.complete);
+        assert_eq!(fs::read(&image).unwrap(), disk.image());
+        assert!(events.contains(&Event::Recovering { pass: 1, units: 1 }));
+        assert!(events.contains(&Event::Recovered { unit: 70 }));
+        // Nothing left for a second pass.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Recovering { pass: 2, .. }))
+        );
+        let map = Map::load(&summary.paths.map).unwrap();
+        assert_eq!(map.get(70).state, State::Captured);
+        assert_eq!(map.get(70).attempts, 2);
+        assert!(!summary.paths.reads.exists());
+    }
+
+    #[test]
+    fn recovery_leaves_a_dead_unit_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(30, 512, None));
+        disk.fault(
+            3,
+            Fault::Fail {
+                code: 0x10,
+                times: 1000,
+            },
+        );
+        let opts = Options {
+            retries: 0,
+            ..recovering(3)
+        };
+        let (result, _) = run(&disk, &image, &opts, &mut never);
+        let summary = result.unwrap();
+        assert!(!summary.complete);
+        assert_eq!(summary.counts.failed, 1);
+        let map = Map::load(&summary.paths.map).unwrap();
+        assert_eq!((map.get(3).attempts, map.get(3).retries), (4, 0));
+        assert_eq!(disk.reads().iter().filter(|&&u| u == 3).count(), 4);
+    }
+
+    #[test]
+    fn a_clean_reread_clears_a_suspect_unit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(30, 512, None));
+        disk.fault(4, Fault::Suspect(0x11));
+        disk.fault(5, Fault::Suspect(0x11));
+        let (result, _) = run(&disk, &image, &options(), &mut never);
+        assert_eq!(result.unwrap().counts.suspect, 2);
+        // Unit 4 now reads with no status; unit 5 still has one.
+        disk.clear(4);
+        let (result, events) = run(&disk, &image, &recovering(1), &mut never);
+        let summary = result.unwrap();
+        assert!(events.contains(&Event::Recovering { pass: 1, units: 2 }));
+        assert_eq!((summary.counts.suspect, summary.counts.conflicting), (1, 0));
+        let map = Map::load(&summary.paths.map).unwrap();
+        assert!(!map.get(4).suspect());
+        assert!(map.get(5).suspect());
+        assert_eq!(map.get(5).attempts, 2);
+        assert_eq!(fs::read(&image).unwrap(), disk.image());
+    }
+
+    #[test]
+    fn rereads_that_disagree_are_kept_and_the_majority_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(30, 512, None));
+        disk.fault(6, Fault::Suspect(0x11));
+        let (result, _) = run(&disk, &image, &options(), &mut never);
+        assert!(result.is_ok());
+        let first = disk.unit(6);
+        let other = disk.unit(1000);
+
+        // A reread that differs: a conflict, and the image keeps the
+        // first version.
+        disk.fault(6, Fault::Data(1000));
+        let (result, events) = run(&disk, &image, &recovering(1), &mut never);
+        let summary = result.unwrap();
+        assert!(events.contains(&Event::Conflict { unit: 6 }));
+        assert_eq!(summary.counts.conflicting, 1);
+        let image_unit = |n: usize| fs::read(&image).unwrap()[n * 512..(n + 1) * 512].to_vec();
+        assert_eq!(image_unit(6), first);
+        let log = Log::open(&summary.paths.reads).unwrap();
+        let versions: Vec<(&[u8], Option<&str>, u32, u16)> = log
+            .reads(6)
+            .iter()
+            .map(|r| (&r.data[..], r.time.as_deref(), r.attempt, r.code))
+            .collect();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(
+            (versions[0].0, versions[0].1, versions[0].2, versions[0].3),
+            (&first[..], None, 1, 0x11)
+        );
+        assert_eq!(
+            (versions[1].0, versions[1].2, versions[1].3),
+            (&other[..], 2, 0)
+        );
+        assert!(versions[1].1.is_some());
+
+        // Another pass reads the new version again: two of three, so it
+        // goes in the image, and the unit stays conflicting.
+        let (result, events) = run(&disk, &image, &recovering(1), &mut never);
+        let summary = result.unwrap();
+        assert!(!events.iter().any(|e| matches!(e, Event::Conflict { .. })));
+        assert_eq!(image_unit(6), other);
+        assert_eq!(Log::open(&summary.paths.reads).unwrap().reads(6).len(), 3);
+        let map = Map::load(&summary.paths.map).unwrap();
+        assert!(map.get(6).conflict);
+        assert!(!map.get(6).suspect());
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&summary.paths.manifest).unwrap()).unwrap();
+        assert_eq!(json["conflicting"][0]["start"], 6);
+        assert_eq!(json["reads"], "disk.img.reads");
+        assert_eq!(json["sha256"], manifest::sha256(&fs::read(&image).unwrap()));
+    }
+
+    #[test]
+    fn a_recovery_pass_survives_a_lost_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(40, 512, None));
+        for unit in [10, 20, 30] {
+            disk.fault(
+                unit,
+                Fault::Fail {
+                    code: 0x10,
+                    times: 4,
+                },
+            );
+        }
+        let (result, _) = run(&disk, &image, &options(), &mut never);
+        assert_eq!(result.unwrap().counts.failed, 3);
+        disk.fault(20, Fault::Slow(Duration::from_millis(1500)));
+        let mut opts = recovering(1);
+        opts.session.response_timeout = Some(Duration::from_millis(100));
+        opts.session.storage_timeout = Duration::from_millis(100);
+        let (result, events) = run(&disk, &image, &opts, &mut never);
+        let summary = result.unwrap();
+        assert!(summary.complete, "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::LinkLost(_))));
+        // One pass, carried on after the restart rather than begun again.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::Recovering { .. }))
+                .count(),
+            1
+        );
         assert_eq!(fs::read(&image).unwrap(), disk.image());
     }
 

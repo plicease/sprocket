@@ -39,6 +39,10 @@ pub struct Manifest {
     pub failed: Vec<Span>,
     pub suspect: Vec<Span>,
     pub conflicting: Vec<Span>,
+    /// The reread log holding every version of the conflicting units,
+    /// relative to the manifest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reads: Option<String>,
     pub missing: Vec<Span>,
     pub fingerprint: Vec<Print>,
     /// Times the operator chose to continue although the source could not
@@ -88,13 +92,16 @@ impl Manifest {
                 })
                 .collect()
         };
+        let name = image
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let reads = format!("{name}.reads");
         Ok(Self {
             format: FORMAT,
             version: VERSION,
-            image: image
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            reads: image.with_file_name(&reads).exists().then_some(reads),
+            image: name,
             image_bytes: fs::metadata(image)?.len(),
             sha256: sha256_file(image)?,
             status: if map.complete() {
