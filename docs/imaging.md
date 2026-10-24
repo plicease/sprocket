@@ -36,7 +36,7 @@ Apple II DOS 3.3 sectors can be 256 bytes; ProDOS blocks are 512 bytes. A fixed 
 - Per-unit or per-range read status, retries, and substituted data policy.
 - Image length and a host-computed digest (e.g. SHA-256).
 
-For nonuniform media, choose a format appropriate to the source rather than forcing a misleading raw-sector image. The manifest schema and naming are not yet decided.
+For nonuniform media, choose a format appropriate to the source rather than forcing a misleading raw-sector image. File naming and formats are under [decisions](#decisions); the manifest's exact schema is settled with the first implementation.
 
 ## Failure behavior
 
@@ -96,12 +96,26 @@ No disk-writing/restoration commands in the initial implementation. Avoid making
 
 BIOS/logical reads do not preserve magnetic flux, weak bits, timing, copy-protection tricks, or some nonstandard formats. SPROCKET is a logical imaging tool, not a replacement for flux-imaging hardware.
 
+## Decisions
+
+Agreed on 2026-10-23 for Milestone 4.
+
+- **Host command.** `sprocket image --port … --list` shows the server's disks; `sprocket image --port … --device N --output NAME.img` images one. Running the same command again with an existing progress map resumes. It refuses to overwrite an image that has no map, and asks for confirmation before a large read.
+- **Files.** `NAME.img` is the raw image. `NAME.img.json` is the manifest (JSON): source, geometry, host and client versions, counts of captured, missing, failed, suspect and conflicting units, and the image's SHA-256. `NAME.img.map` is the progress map: a list of unit ranges with their state, attempts and platform codes, replaced by writing a new copy and renaming it, and protected by a checksum.
+- **Disks are opt-in on DOS.** `SPROCKET SERVER` offers disks only when started with a switch (`/D`), as `/W` gates writes, and only then advertises `STORAGE_LIST` and the `STORAGE_READ` capabilities. Imaging is read-only, but a raw disk includes deleted files and free space.
+- **Geometry.** INT 13h function 08h for drive parameters, with hard disks counted from the BIOS data area and floppies from the equipment word. For a floppy, function 08h gives the drive's geometry, not the disk's, so the client probes the inserted media. A BIOS without function 08h (the original 1981 PC/XT BIOS) is not supported at first.
+- **Large disks.** CHS only at first, with capacity reported as the BIOS gives it. The EDD extensions (functions 41h/42h) become the linear-addressing path when a disk needs them.
+- **Retries and fill.** By default the host asks for 3 client-side retries per unit, with a disk reset between attempts. Unreadable units are zero-filled in the image and always recorded as failed in the map and manifest, never only in the image.
+- **DMA boundary.** INT 13h fails (status 09h) when a read buffer crosses a 64 KB physical boundary, which depends on where DOS loads the program. The client detects this and reads through a bounce buffer.
+- **Labels.** A descriptor's label gives the BIOS drive number, kind and size, with a drive letter only for floppies (for example `"BIOS 80 fixed 79.8M"`): which hard disk partition is `C:` is not reliable from the BIOS alone.
+- **Payload size: to be measured.** The DOS program accepts 1024-byte payloads, so a `STORAGE_READ` response carries one 512-byte unit (two would need 1031 bytes). The protocol allows 4090, enough for seven. The buffer size becomes a build constant, both sizes are timed on real hardware, and the result decides the default.
+- **Allocated-only imaging ([#13](https://github.com/plicease/sprocket/issues/13)) is out of scope for Milestone 4,** but nothing here may rule it out. It needs no protocol change, since the host chooses which units to read. So: the host plans every read; the image is written at unit offsets into a file of full logical size, never appended, so skipped ranges can be sparse holes; the map can record ranges deliberately not read (as distinct from missing or failed); and the manifest records the imaging mode (`raw` for now).
+
 ## Open questions
 
-- First supported floppy/hard-disk geometry discovery methods.
-- Image sidecar format and stable error-map representation.
-- Retry policy and fill bytes for unreadable ranges.
-- Handling drives larger than CHS BIOS limits on older PCs.
+- The exact manifest schema, settled with the first implementation.
+- The default payload size, after the measurements above.
+- First fixtures: a generated 360K floppy and a small hard disk with each unit's number stamped into it, attached as BIOS disks with DOSBox-X's `imgmount`, then under 86Box.
 
 ## Emulator-based image validation
 
