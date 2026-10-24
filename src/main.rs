@@ -8,6 +8,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use sprocket::files::Root;
+use sprocket::imaging::capture::{self, Paths};
 use sprocket::native::{self, session};
 use sprocket::trace::Trace;
 use sprocket::xmodem::{self, Event, RetryReason};
@@ -38,6 +39,10 @@ enum Command {
     Client(ClientArgs),
     /// Connect to a SPROCKET server, show what it supports, and ping it
     Hello(HelloArgs),
+    /// Image a disk from a SPROCKET server (`SPROCKET SERVER /D` on DOS)
+    /// into a raw image, with a progress map and a manifest; run again to
+    /// resume
+    Image(ImageArgs),
 }
 
 #[derive(Args)]
@@ -169,6 +174,51 @@ struct HelloArgs {
     trace: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct ImageArgs {
+    /// Serial device, or tcp://HOST:PORT for an emulator link
+    #[arg(long, default_value = DEFAULT_PORT)]
+    port: String,
+
+    /// Baud rate (serial devices only); the line is always 8N1, no flow control
+    #[arg(long, env = "SPROCKET_BAUD", default_value_t = 9600)]
+    baud: u32,
+
+    /// Seconds to keep calling the server before giving up
+    #[arg(long, default_value_t = 60)]
+    wait: u64,
+
+    /// List the server's disks and exit
+    #[arg(long, conflicts_with_all = ["device", "output"])]
+    list: bool,
+
+    /// Device number to image, from --list
+    #[arg(long, required_unless_present = "list")]
+    device: Option<u8>,
+
+    /// Image file to write: NAME.img, with NAME.img.map and NAME.img.json
+    /// beside it. If its map exists, imaging resumes
+    #[arg(long, required_unless_present = "list", value_name = "NAME.img")]
+    output: Option<PathBuf>,
+
+    /// Retries per unit on the server, after a failed read
+    #[arg(long, default_value_t = 3)]
+    retries: u8,
+
+    /// Most units per request; 0 for as many as fit the payload
+    #[arg(long, default_value_t = 0)]
+    max_units: usize,
+
+    /// Do not ask: start without confirming, and continue with a disk
+    /// that cannot be verified as the one imaged before
+    #[arg(long)]
+    yes: bool,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Protocol {
     Zmodem,
@@ -183,6 +233,7 @@ fn main() -> anyhow::Result<()> {
         Command::Serve(args) => serve(args),
         Command::Client(args) => client(args),
         Command::Hello(args) => hello(args),
+        Command::Image(args) => image(args),
     }
 }
 
@@ -391,6 +442,238 @@ fn hello_session(
     session.close().context("CLOSE failed")?;
     println!("session closed");
     Ok(())
+}
+
+fn image(args: ImageArgs) -> anyhow::Result<()> {
+    let trace = open_trace(args.trace.as_ref(), "image")?;
+    let mut link = open_link(&args.port, args.baud, trace.as_ref())
+        .with_context(|| format!("cannot open {}", args.port))?;
+    let options = session::Options {
+        baud: args.baud,
+        wait: Duration::from_secs(args.wait),
+        ..session::Options::default()
+    };
+    eprintln!(
+        "calling the server on {}; waiting up to {}s",
+        args.port, args.wait
+    );
+    let (devices, listed) = list_disks(link.as_mut(), &options)?;
+    let (Some(device), Some(output)) = (args.device, args.output.as_ref()) else {
+        if devices.is_empty() {
+            println!("the server offers no disks");
+        }
+        for d in &devices {
+            println!("{}", describe_disk(d));
+        }
+        return Ok(());
+    };
+    let d = devices
+        .iter()
+        .find(|d| d.device == device)
+        .with_context(|| format!("the server has no device {device}; see --list"))?;
+    let paths = Paths::new(output);
+    if !paths.map.exists() {
+        if paths.image.exists() {
+            anyhow::bail!(
+                "{} exists and has no progress map; refusing to overwrite it",
+                paths.image.display()
+            );
+        }
+        let wire = d.capacity() * 10 / u64::from(args.baud.max(1));
+        let prompt = format!(
+            "image {} into {} (at least {} on the wire at {} baud)?",
+            describe_disk(d),
+            paths.image.display(),
+            duration(wire),
+            args.baud
+        );
+        if !args.yes && !ask(&prompt) {
+            anyhow::bail!("not started");
+        }
+    }
+
+    let capture_options = capture::Options {
+        device,
+        retries: args.retries,
+        max_units: args.max_units,
+        session: session::Options {
+            previous_session: Some(listed),
+            ..options
+        },
+        ..capture::Options::default()
+    };
+    let yes = args.yes;
+    let mut confirm = |q: &capture::Question| {
+        if yes {
+            eprintln!("warning: {q}; continuing (--yes)");
+            return true;
+        }
+        ask(&format!("{q}. Continue?"))
+    };
+    let tty = io::stderr().is_terminal();
+    let mut shown = std::time::Instant::now();
+    let mut mid_line = false;
+    let mut events = |e: &capture::Event| {
+        let mut line = |text: &str| {
+            if mid_line {
+                eprintln!();
+                mid_line = false;
+            }
+            eprintln!("{text}");
+            if let Some(trace) = &trace {
+                trace.note(text);
+            }
+        };
+        match e {
+            capture::Event::Started {
+                source,
+                resumed,
+                counts,
+                units_per_read,
+            } => line(&format!(
+                "{} {}: {} of {} units captured, up to {units_per_read} per request",
+                if *resumed { "resuming" } else { "imaging" },
+                source.label,
+                counts.captured,
+                source.unit_count
+            )),
+            capture::Event::MapUnusable(why) => line(&format!(
+                "the progress map is unusable ({why}); reading every unit again"
+            )),
+            capture::Event::UnitFailed { unit, code } => {
+                line(&format!("unit {unit} could not be read (code {code:#06x})"))
+            }
+            capture::Event::LinkLost(why) => line(&format!("{why}; restarting the link")),
+            capture::Event::Progress { counts } if tty => {
+                if shown.elapsed() >= Duration::from_millis(250) {
+                    let total = counts.captured + counts.missing + counts.failed + counts.skipped;
+                    let done = total - counts.missing;
+                    eprint!(
+                        "\r{done}/{total} units ({}%), {} failed",
+                        (done * 100).checked_div(total).unwrap_or(100),
+                        counts.failed
+                    );
+                    let _ = io::stderr().flush();
+                    mid_line = true;
+                    shown = std::time::Instant::now();
+                }
+            }
+            capture::Event::Progress { .. } => {}
+        }
+    };
+    let result = capture::capture(
+        link.as_mut(),
+        output,
+        &capture_options,
+        &mut confirm,
+        &mut events,
+    );
+    if mid_line {
+        eprintln!();
+    }
+    let summary = match result {
+        Ok(summary) => summary,
+        Err(e) => {
+            if let Some(trace) = &trace {
+                trace.note(&format!("{e}"));
+            }
+            return Err(e.into());
+        }
+    };
+    let c = summary.counts;
+    if summary.complete {
+        println!("image complete: {} units captured", c.captured);
+    } else {
+        println!(
+            "image incomplete: {} units captured, {} failed, {} missing",
+            c.captured, c.failed, c.missing
+        );
+    }
+    if c.suspect > 0 {
+        println!(
+            "{} units were read with a warning from the server (suspect)",
+            c.suspect
+        );
+    }
+    println!(
+        "wrote {}, {} and {}",
+        summary.paths.image.display(),
+        summary.paths.map.display(),
+        summary.paths.manifest.display()
+    );
+    Ok(())
+}
+
+/// The server's disks, from a session of its own, and that session's ID.
+fn list_disks(
+    link: &mut dyn transport::Transport,
+    options: &session::Options,
+) -> anyhow::Result<(Vec<native::storage::Descriptor>, u16)> {
+    let mut session =
+        session::Session::connect(link, options, |_| {}).context("cannot start a session")?;
+    if !session.has_storage() {
+        anyhow::bail!("the server offers no disks (on DOS, start it with SPROCKET SERVER /D)");
+    }
+    let devices = session.storage_list().context("cannot list disks")?;
+    let id = session.session_id();
+    session.close().context("CLOSE failed")?;
+    Ok((devices, id))
+}
+
+fn describe_disk(d: &native::storage::Descriptor) -> String {
+    use native::storage::DiskKind;
+    let kind = match d.kind {
+        DiskKind::Removable => "removable",
+        DiskKind::Fixed => "fixed",
+        _ => "unknown kind",
+    };
+    let mut text = format!(
+        "device {}: {}, {kind}, {} units of {} bytes ({})",
+        d.device,
+        if d.label.is_empty() {
+            "(no label)"
+        } else {
+            &d.label
+        },
+        d.unit_count,
+        d.unit_size,
+        size(d.capacity())
+    );
+    if let Some(g) = d.geometry.filter(|_| d.chs()) {
+        text.push_str(&format!(", CHS {}/{}/{}", g.cylinders, g.heads, g.sectors));
+    }
+    text
+}
+
+/// A byte count for people: KB below a megabyte, MB above.
+fn size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// Seconds as hours and minutes.
+fn duration(secs: u64) -> String {
+    match (secs / 3600, secs % 3600 / 60) {
+        (0, 0) => format!("{secs}s"),
+        (0, m) => format!("{m}m"),
+        (h, m) => format!("{h}h {m:02}m"),
+    }
+}
+
+/// Ask a yes/no question on the terminal; no when there is no terminal.
+fn ask(prompt: &str) -> bool {
+    if !io::stdin().is_terminal() {
+        eprintln!("{prompt} [y/N] no (not a terminal; use --yes)");
+        return false;
+    }
+    eprint!("{prompt} [y/N] ");
+    let _ = io::stderr().flush();
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).is_ok()
+        && matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
 }
 
 fn send(args: SendArgs) -> anyhow::Result<()> {
