@@ -61,16 +61,20 @@ build/test_tree: test/test_tree.c test/vectors.c $(CORE) $(TREE) src/place.c src
 build/test_shell: test/test_shell.c test/vectors.c src/shell.c $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_shell.c test/vectors.c src/shell.c
 
+build/test_storage: test/test_storage.c src/storage.c $(HEADERS) | build
+	$(CC) $(HOST_CFLAGS) -o $@ test/test_storage.c src/storage.c
+
 build/sprocket-client: $(HOST_SRC) $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ $(HOST_SRC)
 
 host: build/sprocket-client
 
-test: build/test_frame build/test_proto build/test_tree build/test_shell
+test: build/test_frame build/test_proto build/test_tree build/test_shell build/test_storage
 	build/test_frame $(VECTORS)
 	build/test_proto $(VECTORS)
 	build/test_tree $(VECTORS)
 	build/test_shell $(SHELL_FIXTURES)
+	build/test_storage
 
 clean:
 	rm -rf build
