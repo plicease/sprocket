@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use super::frame::{MAX_PAYLOAD, MIN_PAYLOAD};
 use super::link::{self, ERROR, Link, Retry};
+use super::tree;
 use crate::transport::Transport;
 
 pub const HELLO: u8 = 0x01;
@@ -19,7 +20,7 @@ pub const CLOSE: u8 = 0x03;
 pub const MAGIC: &[u8; 4] = b"SPRK";
 /// The protocol version this host implements.
 pub const MAJOR: u8 = 1;
-pub const MINOR: u8 = 0;
+pub const MINOR: u8 = 1;
 
 /// Longest client version string a `HELLO_REPLY` may carry.
 const MAX_VERSION_LEN: usize = 32;
@@ -69,13 +70,15 @@ impl Capabilities {
     pub const STORAGE_LIST: u32 = 1 << 2;
     pub const STORAGE_READ_UNITS: u32 = 1 << 3;
     pub const STORAGE_READ_CHS: u32 = 1 << 4;
+    pub const FILE_TREE: u32 = 1 << 5;
 
-    const NAMES: [(u32, &'static str); 5] = [
+    const NAMES: [(u32, &'static str); 6] = [
         (Self::FILE_WRITE, "FILE_WRITE"),
         (Self::FILE_REPLACE, "FILE_REPLACE"),
         (Self::STORAGE_LIST, "STORAGE_LIST"),
         (Self::STORAGE_READ_UNITS, "STORAGE_READ_UNITS"),
         (Self::STORAGE_READ_CHS, "STORAGE_READ_CHS"),
+        (Self::FILE_TREE, "FILE_TREE"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -103,7 +106,20 @@ impl fmt::Display for Capabilities {
 pub enum Platform {
     Dos,
     AppleII,
+    Linux,
     Other(u8),
+}
+
+impl Platform {
+    /// The platform's number in `HELLO_REPLY`.
+    pub fn code(self) -> u8 {
+        match self {
+            Platform::Dos => 1,
+            Platform::AppleII => 2,
+            Platform::Linux => 3,
+            Platform::Other(code) => code,
+        }
+    }
 }
 
 impl From<u8> for Platform {
@@ -111,6 +127,7 @@ impl From<u8> for Platform {
         match code {
             1 => Platform::Dos,
             2 => Platform::AppleII,
+            3 => Platform::Linux,
             other => Platform::Other(other),
         }
     }
@@ -121,6 +138,7 @@ impl fmt::Display for Platform {
         match self {
             Platform::Dos => f.write_str("DOS on x86"),
             Platform::AppleII => f.write_str("Apple II"),
+            Platform::Linux => f.write_str("Linux"),
             Platform::Other(code) => write!(f, "unknown platform {code}"),
         }
     }
@@ -146,7 +164,37 @@ pub enum ErrorClass {
     MediaError,
     FileError,
     VerifyFailed,
+    // Minor version 1 (docs/protocol-v1.1.md section 5).
+    NotFound,
+    NotADirectory,
+    IsADirectory,
+    Exists,
+    ReadOnly,
+    Ambiguous,
+    BadName,
     Unknown(u8),
+}
+
+impl ErrorClass {
+    /// The class's number on the wire.
+    pub fn code(self) -> u8 {
+        match self {
+            ErrorClass::Unsupported => 1,
+            ErrorClass::InvalidRequest => 2,
+            ErrorClass::ProtocolMismatch => 3,
+            ErrorClass::MediaError => 4,
+            ErrorClass::FileError => 5,
+            ErrorClass::VerifyFailed => 6,
+            ErrorClass::NotFound => 7,
+            ErrorClass::NotADirectory => 8,
+            ErrorClass::IsADirectory => 9,
+            ErrorClass::Exists => 10,
+            ErrorClass::ReadOnly => 11,
+            ErrorClass::Ambiguous => 12,
+            ErrorClass::BadName => 13,
+            ErrorClass::Unknown(code) => code,
+        }
+    }
 }
 
 impl From<u8> for ErrorClass {
@@ -158,6 +206,13 @@ impl From<u8> for ErrorClass {
             4 => ErrorClass::MediaError,
             5 => ErrorClass::FileError,
             6 => ErrorClass::VerifyFailed,
+            7 => ErrorClass::NotFound,
+            8 => ErrorClass::NotADirectory,
+            9 => ErrorClass::IsADirectory,
+            10 => ErrorClass::Exists,
+            11 => ErrorClass::ReadOnly,
+            12 => ErrorClass::Ambiguous,
+            13 => ErrorClass::BadName,
             other => ErrorClass::Unknown(other),
         }
     }
@@ -172,6 +227,13 @@ impl fmt::Display for ErrorClass {
             ErrorClass::MediaError => f.write_str("media error"),
             ErrorClass::FileError => f.write_str("file error"),
             ErrorClass::VerifyFailed => f.write_str("verification failed"),
+            ErrorClass::NotFound => f.write_str("not found"),
+            ErrorClass::NotADirectory => f.write_str("not a directory"),
+            ErrorClass::IsADirectory => f.write_str("is a directory"),
+            ErrorClass::Exists => f.write_str("exists"),
+            ErrorClass::ReadOnly => f.write_str("read-only"),
+            ErrorClass::Ambiguous => f.write_str("ambiguous name"),
+            ErrorClass::BadName => f.write_str("bad name"),
             ErrorClass::Unknown(code) => write!(f, "error class {code}"),
         }
     }
@@ -222,13 +284,13 @@ impl fmt::Display for Error {
         match self {
             Error::Link(e) => write!(f, "{e}"),
             Error::NoClient { waited } => {
-                write!(f, "no client answered within {}s", waited.as_secs())
+                write!(f, "no server answered within {}s", waited.as_secs())
             }
             Error::VersionMismatch { major, minor } => write!(
                 f,
-                "client speaks protocol {major}.{minor}; this host speaks {MAJOR}.{MINOR}"
+                "server speaks protocol {major}.{minor}; this side speaks {MAJOR}.{MINOR}"
             ),
-            Error::Client(e) => write!(f, "client reported {e}"),
+            Error::Client(e) => write!(f, "server reported {e}"),
             Error::Protocol(what) => write!(f, "protocol error: {what}"),
         }
     }
@@ -316,8 +378,6 @@ impl<'a> Session<'a> {
             .unwrap_or_else(|| link::response_timeout(options.baud, max_payload, max_payload));
         Ok(Self {
             link,
-            // The lower of the two; a no-op while this host is at minor 0.
-            #[allow(clippy::unnecessary_min_or_max)]
             minor: MINOR.min(client.minor),
             client,
             max_payload,
@@ -353,11 +413,172 @@ impl<'a> Session<'a> {
         Ok(start.elapsed())
     }
 
+    /// Whether the client serves a file tree (protocol v1.1), so that
+    /// [`stat`](Self::stat) and the other tree requests may be used.
+    pub fn has_tree(&self) -> bool {
+        self.minor >= 1 && self.client.capabilities.has(Capabilities::FILE_TREE)
+    }
+
+    /// Whether the client accepts files, and replacing existing ones.
+    pub fn writable(&self) -> (bool, bool) {
+        let caps = self.client.capabilities;
+        (
+            caps.has(Capabilities::FILE_WRITE),
+            caps.has(Capabilities::FILE_REPLACE),
+        )
+    }
+
+    /// The most file data one `FILE_READ` response can carry.
+    pub fn read_chunk(&self) -> usize {
+        self.max_payload - tree::READ_HEADER
+    }
+
+    /// The most file data one `FILE_DATA` request can carry.
+    pub fn write_chunk(&self) -> usize {
+        self.max_payload - tree::DATA_HEADER
+    }
+
+    /// `STAT`: look up a tree path. The entry's name is the whole path as
+    /// spelled on the client.
+    pub fn stat(&mut self, path: &str) -> Result<tree::Entry, Error> {
+        let mut request = Vec::new();
+        tree::put_path(&mut request, checked(path)?);
+        let reply = call(&mut self.link, tree::STAT, &request, self.retry)?;
+        tree::Entry::decode(&mut Fields {
+            data: &reply,
+            what: "STAT response",
+        })
+        .map_err(Error::Protocol)
+    }
+
+    /// `DIR_LIST`: every entry of a directory, in the client's order, with
+    /// repeated names dropped.
+    pub fn list(&mut self, path: &str) -> Result<Vec<tree::Entry>, Error> {
+        let path = checked(path)?;
+        let mut entries: Vec<tree::Entry> = Vec::new();
+        loop {
+            let index = u16::try_from(entries.len())
+                .map_err(|_| Error::Protocol("directory listing is too long".to_string()))?;
+            let mut request = index.to_le_bytes().to_vec();
+            tree::put_path(&mut request, path);
+            let reply = call(&mut self.link, tree::DIR_LIST, &request, self.retry)?;
+            let mut f = Fields {
+                data: &reply,
+                what: "DIR_LIST response",
+            };
+            let flags = f.u8()?;
+            let count = f.u8()?;
+            let mut page = Vec::new();
+            for _ in 0..count {
+                page.push(tree::Entry::decode(&mut f).map_err(Error::Protocol)?);
+            }
+            // Repeats can only come from a directory changing between pages.
+            let new = page.len();
+            for entry in page {
+                if !entries.iter().any(|e| e.name == entry.name) {
+                    entries.push(entry);
+                }
+            }
+            if flags & tree::MORE == 0 {
+                return Ok(entries);
+            }
+            if new == 0 {
+                return Err(Error::Protocol(
+                    "DIR_LIST says more entries follow but sent none".to_string(),
+                ));
+            }
+        }
+    }
+
+    /// `FILE_READ`: up to `length` bytes from `offset`, with the file's
+    /// current size and time.
+    pub fn read(&mut self, path: &str, offset: u32, length: u16) -> Result<Chunk, Error> {
+        let mut request = offset.to_le_bytes().to_vec();
+        request.extend_from_slice(&length.to_le_bytes());
+        tree::put_path(&mut request, checked(path)?);
+        let reply = call(&mut self.link, tree::FILE_READ, &request, self.retry)?;
+        let mut f = Fields {
+            data: &reply,
+            what: "FILE_READ response",
+        };
+        let size = f.u32()?;
+        let mtime = f.u32()?;
+        if f.data.len() > usize::from(length) {
+            return Err(Error::Protocol(
+                "FILE_READ returned more data than asked".to_string(),
+            ));
+        }
+        Ok(Chunk {
+            size,
+            mtime,
+            data: f.data.to_vec(),
+        })
+    }
+
+    /// `FILE_BEGIN`: start writing `size` bytes to a tree path. Returns
+    /// the `found` bits.
+    pub fn begin(&mut self, path: &str, size: u32, replace: bool, mtime: u32) -> Result<u8, Error> {
+        let mut request = size.to_le_bytes().to_vec();
+        request.push(if replace { tree::REPLACE } else { 0 });
+        tree::put_path(&mut request, checked(path)?);
+        request.extend_from_slice(&mtime.to_le_bytes());
+        let reply = call(&mut self.link, tree::FILE_BEGIN, &request, self.retry)?;
+        Ok(reply.first().copied().unwrap_or(0))
+    }
+
+    /// `FILE_DATA`: the next part of the file being written.
+    pub fn data(&mut self, offset: u32, data: &[u8]) -> Result<(), Error> {
+        let mut request = offset.to_le_bytes().to_vec();
+        request.extend_from_slice(data);
+        call(&mut self.link, tree::FILE_DATA, &request, self.retry)?;
+        Ok(())
+    }
+
+    /// `FILE_COMMIT`: check the file and put it in place. Returns the
+    /// client's CRC-32.
+    pub fn commit(&mut self, size: u32, crc: u32) -> Result<u32, Error> {
+        let mut request = size.to_le_bytes().to_vec();
+        request.extend_from_slice(&crc.to_le_bytes());
+        let reply = call(&mut self.link, tree::FILE_COMMIT, &request, self.retry)?;
+        Fields {
+            data: &reply,
+            what: "FILE_COMMIT response",
+        }
+        .u32()
+    }
+
+    /// `FILE_ABORT`: discard the file being written.
+    pub fn abort(&mut self) -> Result<(), Error> {
+        call(&mut self.link, tree::FILE_ABORT, &[], self.retry)?;
+        Ok(())
+    }
+
     /// End the session with `CLOSE`.
     pub fn close(mut self) -> Result<(), Error> {
         call(&mut self.link, CLOSE, &[], self.retry)?;
         Ok(())
     }
+}
+
+/// Part of a file, from `FILE_READ`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chunk {
+    /// The file's length when this part was read.
+    pub size: u32,
+    pub mtime: u32,
+    pub data: Vec<u8>,
+}
+
+/// A tree path short enough to send.
+fn checked(path: &str) -> Result<&str, Error> {
+    if path.len() > tree::MAX_PATH {
+        return Err(Error::Protocol(format!(
+            "path of {} bytes is longer than {}",
+            path.len(),
+            tree::MAX_PATH
+        )));
+    }
+    Ok(path)
 }
 
 /// Send a request and return its response payload, turning an `ERROR`
@@ -381,13 +602,13 @@ fn new_session_id(previous: Option<u16>) -> u16 {
 
 /// Reads little-endian fields from a payload. Bytes after the last field
 /// read are ignored, as the extension rules require.
-struct Fields<'b> {
-    data: &'b [u8],
-    what: &'static str,
+pub(crate) struct Fields<'b> {
+    pub data: &'b [u8],
+    pub what: &'static str,
 }
 
 impl<'b> Fields<'b> {
-    fn take(&mut self, n: usize) -> Result<&'b [u8], Error> {
+    pub fn take(&mut self, n: usize) -> Result<&'b [u8], Error> {
         if self.data.len() < n {
             return Err(Error::Protocol(format!("{} is too short", self.what)));
         }
@@ -396,16 +617,16 @@ impl<'b> Fields<'b> {
         Ok(head)
     }
 
-    fn u8(&mut self) -> Result<u8, Error> {
+    pub fn u8(&mut self) -> Result<u8, Error> {
         Ok(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Result<u16, Error> {
+    pub fn u16(&mut self) -> Result<u16, Error> {
         let b = self.take(2)?;
         Ok(u16::from_le_bytes([b[0], b[1]]))
     }
 
-    fn u32(&mut self) -> Result<u32, Error> {
+    pub fn u32(&mut self) -> Result<u32, Error> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
@@ -631,7 +852,7 @@ mod tests {
             let session = session.unwrap();
             (session.max_payload(), session.minor())
         });
-        assert_eq!(limits, (1024, 0));
+        assert_eq!(limits, (1024, MINOR));
     }
 
     #[test]

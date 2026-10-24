@@ -1,9 +1,14 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * SPROCKET client: answers the host over a serial port until the host
- * closes the session or the user presses Esc.
+ * SPROCKET: the native protocol on DOS.
  *
- * Usage: SPROCKET [port [baud]]    default COM1 9600
+ * SPROCKET SERVER [port [baud [dir]]] [/W] answers the host over a serial
+ * port until the host closes the session or the user presses Esc. With a
+ * directory it serves that tree (read-only unless /W); without one it
+ * answers HELLO, PING and CLOSE only.
+ *
+ * SPROCKET CLIENT [port [baud]] calls a server and runs the file-transfer
+ * shell (cli.c).
  *
  * Screen output happens only before a response is sent, never between
  * sending a response and reading the next request: printing scrolls the
@@ -14,11 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cli.h"
 #include "frame.h"
 #include "port.h"
+#include "fsys.h"
 #include "proto.h"
+#include "tree.h"
 
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
 #define MAX_PAYLOAD 1024
 
 /*
@@ -36,10 +44,38 @@ static void send_byte(uint8_t byte)
     port_put(byte);
 }
 
-int main(int argc, char **argv)
+static void usage(void)
 {
-    const char *name = argc > 1 ? argv[1] : "COM1";
-    long baud = argc > 2 ? atol(argv[2]) : 9600L;
+    printf("SPROCKET %s: native file transfer over a serial line.\n\n", VERSION);
+    printf("  SPROCKET CLIENT [port [baud]]\n");
+    printf("      Call a server on port (default COM1 9600) and copy files to\n");
+    printf("      and from it.\n");
+    printf("  SPROCKET SERVER [port [baud [dir]]] [/W]\n");
+    printf("      Answer a client on port. With dir, serve its files; /W also\n");
+    printf("      lets the client write them.\n");
+}
+
+/* arg is option, ignoring ASCII case; option is in upper case. */
+static int is_option(const char *arg, const char *option)
+{
+    for (; *option; arg++, option++) {
+        if ((*arg >= 'a' && *arg <= 'z' ? *arg - ('a' - 'A') : *arg) != *option) {
+            return 0;
+        }
+    }
+    return *arg == '\0';
+}
+
+static int server(int argc, char **argv)
+{
+    const char *args[3] = { "COM1", "9600", NULL };
+    const char *name;
+    long baud;
+    const char *dir;
+    int writable = 0;
+    int count = 0;
+    int i;
+    struct fs_entry root;
     struct decoder dec;
     struct client cl;
     uint16_t idle = 0;
@@ -54,8 +90,28 @@ int main(int argc, char **argv)
     const uint8_t *out;
     uint16_t out_len;
 
-    if (argc > 3 || (argc > 1 && strcmp(argv[1], "/?") == 0)) {
-        printf("Usage: SPROCKET [port [baud]]   (default COM1 9600)\n");
+    for (i = 0; i < argc; i++) {
+        if (is_option(argv[i], "/W")) {
+            writable = 1;
+        } else if (argv[i][0] == '/' && argv[i][1] != '\0' && argv[i][2] == '\0') {
+            usage();
+            return 1;
+        } else if (count < 3) {
+            args[count++] = argv[i];
+        } else {
+            usage();
+            return 1;
+        }
+    }
+    name = args[0];
+    baud = atol(args[1]);
+    dir = args[2];
+    if (writable && dir == NULL) {
+        printf("/W needs a directory to serve.\n");
+        return 1;
+    }
+    if (dir != NULL && (fs_stat(dir, &root) != FS_OK || !root.dir)) {
+        printf("Not a directory: %s\n", dir);
         return 1;
     }
     if (port_open(name, baud) != 0) {
@@ -69,10 +125,23 @@ int main(int argc, char **argv)
     cl.platform = PLATFORM_DOS;
     cl.version = VERSION;
     client_init(&cl, resp_buf);
+    if (dir != NULL) {
+        tree_init(dir, writable);
+        cl.minor = 1;
+        cl.capabilities = CAP_FILE_TREE;
+        if (writable) {
+            cl.capabilities |= CAP_FILE_WRITE | CAP_FILE_REPLACE;
+        }
+        cl.handler = tree_request;
+        cl.reset = tree_reset;
+    }
 
     printf("SPROCKET %s, protocol %d.%d, on %s at %ld 8N1.\n", VERSION,
-           PROTO_MAJOR, PROTO_MINOR, name, baud);
-    printf("Waiting for the host; press Esc to exit.\n");
+           PROTO_MAJOR, cl.minor, name, baud);
+    if (dir != NULL) {
+        printf("Serving %s%s.\n", dir, writable ? ", writable" : ", read-only");
+    }
+    printf("Waiting for a client; press Esc to exit.\n");
 
     for (;;) {
         if (port_get(&byte)) {
@@ -117,12 +186,37 @@ int main(int argc, char **argv)
         }
     }
 
+    if (dir != NULL) {
+        tree_reset();
+    }
     port_close();
     if (cl.closed) {
-        printf("Session %04X closed by the host.\n", cl.session);
+        printf("Session %04X closed by the client.\n", cl.session);
     }
     printf("%lu frames, %lu dropped, %u repeated, %u receive errors.\n",
            (unsigned long)frames, (unsigned long)dropped, cl.duplicates,
            port_errors());
     return 0;
+}
+
+static int client(int argc, char **argv)
+{
+    if (argc > 2 || (argc > 0 && argv[0][0] == '/' && argv[0][1] != '\0' && argv[0][2] == '\0')) {
+        usage();
+        return 1;
+    }
+    return cli_run(argc > 0 ? argv[0] : "COM1", argc > 1 ? atol(argv[1]) : 9600L, resp_buf,
+                   rx_buf, MAX_PAYLOAD, 0);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && is_option(argv[1], "SERVER")) {
+        return server(argc - 2, argv + 2);
+    }
+    if (argc > 1 && is_option(argv[1], "CLIENT")) {
+        return client(argc - 2, argv + 2);
+    }
+    usage();
+    return 1;
 }

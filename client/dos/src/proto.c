@@ -11,8 +11,12 @@ static uint8_t refusal[FRAME_HEADER_LEN + 4];
 
 void client_init(struct client *c, uint8_t *resp)
 {
+    c->minor = 0;
+    c->handler = 0;
+    c->reset = 0;
     c->session = 0;
     c->host_max_payload = FRAME_MIN_PAYLOAD;
+    c->session_minor = 0;
     c->have_record = 0;
     c->resp = resp;
     c->resp_len = 0;
@@ -43,11 +47,15 @@ static uint8_t *header(uint8_t *buf, uint8_t kind, const uint8_t *request)
     return buf + FRAME_HEADER_LEN;
 }
 
-/* ERROR with no message; returns the body length. */
+/* ERROR with no message; returns the body length. Classes from minor
+ * version 1 become FILE_ERROR for a host that does not know them. */
 static uint16_t error_body(uint8_t *buf, const uint8_t *request,
-                           uint8_t class, uint16_t code)
+                           uint8_t class, uint16_t code, uint8_t minor)
 {
     uint8_t *p = header(buf, MSG_ERROR, request);
+    if (class > ERR_VERIFY_FAILED && minor == 0) {
+        class = ERR_FILE_ERROR;
+    }
     p[0] = class;
     put16(p + 1, code);
     p[3] = 0; /* message_len */
@@ -62,13 +70,14 @@ static uint16_t hello(struct client *c, const uint8_t *body, uint16_t len)
     uint16_t version_len;
 
     if (in_len < 8 || memcmp(in, magic, 4) != 0) {
-        return error_body(c->resp, body, ERR_INVALID_REQUEST, 0);
+        return error_body(c->resp, body, ERR_INVALID_REQUEST, 0, 0);
     }
     if (in[4] != PROTO_MAJOR) {
         return error_body(c->resp, body, ERR_PROTOCOL_MISMATCH,
-                          (uint16_t)(PROTO_MAJOR | (PROTO_MINOR << 8)));
+                          (uint16_t)(PROTO_MAJOR | (c->minor << 8)), 0);
     }
     c->host_max_payload = (uint16_t)(in[6] | (in[7] << 8));
+    c->session_minor = in[5] < c->minor ? in[5] : c->minor;
 
     version_len = (uint16_t)strlen(c->version);
     if (version_len > 32) {
@@ -77,7 +86,7 @@ static uint16_t hello(struct client *c, const uint8_t *body, uint16_t len)
     p = header(c->resp, MSG_HELLO | MSG_RESPONSE, body);
     memcpy(p, magic, 4);
     p[4] = PROTO_MAJOR;
-    p[5] = PROTO_MINOR;
+    p[5] = c->minor;
     put16(p + 6, c->max_payload);
     put32(p + 8, c->capabilities);
     p[12] = c->platform;
@@ -89,6 +98,10 @@ static uint16_t hello(struct client *c, const uint8_t *body, uint16_t len)
 static uint16_t execute(struct client *c, const uint8_t *body, uint16_t len)
 {
     uint8_t *p;
+    uint16_t limit;
+    uint8_t class = ERR_UNSUPPORTED;
+    uint16_t code = 0;
+    int n;
 
     switch (body[0]) {
     case MSG_HELLO:
@@ -99,10 +112,25 @@ static uint16_t execute(struct client *c, const uint8_t *body, uint16_t len)
         return len;
     case MSG_CLOSE:
         header(c->resp, MSG_CLOSE | MSG_RESPONSE, body);
+        if (c->reset) {
+            c->reset();
+        }
         c->closed = 1;
         return FRAME_HEADER_LEN;
     default:
-        return error_body(c->resp, body, ERR_UNSUPPORTED, 0);
+        if (c->handler == 0) {
+            return error_body(c->resp, body, ERR_UNSUPPORTED, 0, 0);
+        }
+        /* The host's limit and ours. */
+        limit = c->host_max_payload < c->max_payload ? c->host_max_payload
+                                                     : c->max_payload;
+        p = header(c->resp, (uint8_t)(body[0] | MSG_RESPONSE), body);
+        n = c->handler(body[0], body + FRAME_HEADER_LEN,
+                       (uint16_t)(len - FRAME_HEADER_LEN), p, limit, &class, &code);
+        if (n < 0) {
+            return error_body(c->resp, body, class, code, c->session_minor);
+        }
+        return (uint16_t)(FRAME_HEADER_LEN + n);
     }
 }
 
@@ -137,13 +165,16 @@ int client_handle(struct client *c, const uint8_t *body, uint16_t len,
         if (seq == c->rec_seq && kind != MSG_HELLO) {
             /* Same seq, different request: refuse, keep the cache. */
             *out = refusal;
-            *out_len = error_body(refusal, body, ERR_INVALID_REQUEST, 0);
+            *out_len = error_body(refusal, body, ERR_INVALID_REQUEST, 0, 0);
             return 1;
         }
     }
 
     if (kind == MSG_HELLO) {
         /* Any HELLO that is not a duplicate starts a new session. */
+        if (c->reset) {
+            c->reset();
+        }
         c->session = session;
         c->started = 1;
     }

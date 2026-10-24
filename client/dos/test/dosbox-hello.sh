@@ -62,7 +62,7 @@ serial2=disabled
 [autoexec]
 mount c $work
 c:
-SPROCKET COM1 $baud > OUT.TXT
+SPROCKET SERVER COM1 $baud > OUT.TXT
 EOF
 # DOSBox-X is left running after SPROCKET exits and is stopped when this
 # script exits: quitting at once could drop the last bytes sent.
@@ -110,8 +110,8 @@ fail() {
     status=1
 }
 
-grep -q "closed by the host" "$work/OUT.TXT" 2>/dev/null ||
-    fail "the client did not report the session closed by the host"
+grep -q "closed by the client" "$work/OUT.TXT" 2>/dev/null ||
+    fail "SPROCKET did not report the session closed by the client"
 
 # "N frames, N dropped, N repeated, N receive errors."
 counters=$(tr -d '\r' < "$work/OUT.TXT" 2>/dev/null |

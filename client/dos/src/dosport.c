@@ -8,6 +8,7 @@
 #include <bios.h>
 #include <conio.h>
 #include <i86.h>
+#include <io.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,4 +137,21 @@ int port_escape(void)
         return 0;
     }
     return (_bios_keybrd(_KEYBRD_READ) & 0xFF) == 0x1B;
+}
+
+int port_key(void)
+{
+    unsigned key;
+    unsigned char c;
+
+    /* Commands from a file or pipe (SPROCKET CLIENT < CMDS.TXT). */
+    if (!isatty(0)) {
+        return read(0, &c, 1) == 1 ? c : PORT_EOF;
+    }
+    if (!_bios_keybrd(_KEYBRD_READY)) {
+        return PORT_NO_KEY;
+    }
+    key = _bios_keybrd(_KEYBRD_READ) & 0xFF;
+    /* 0 and E0 come with keys that have no ASCII code, such as arrows. */
+    return key == 0 || key == 0xE0 ? PORT_NO_KEY : (int)key;
 }

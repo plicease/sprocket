@@ -1,0 +1,22 @@
+# The native client's help, without its footer: what `help` shows in
+# `sprocket client` before the editing notes. Shared by the Rust and DOS
+# implementations so both know the same commands with the same usage.
+# Lines starting with # are comments.
+Commands:
+  cd [DIR]         change the remote directory; with no DIR, go to the top
+  dir [-R] [PATH]  same as ls
+  get [-f] FILE    copy remote files here; FILE may use * and ?
+                   wildcards; -f replaces existing files
+  help             show this list
+  lcd [DIR]        change the local directory; with no DIR, go home
+  ldir [PATH]      same as lls
+  lls [PATH]       list a local directory
+  lpwd             show the local directory
+  ls [-R] [PATH]   list a remote directory; -R lists everything below it
+  put [-f] FILE    copy local files to the remote directory; FILE may
+                   use * and ? wildcards; -f replaces existing files
+  pwd              show the remote directory
+  quit             end the session (or Ctrl-D)
+  set editing on|off
+                   turn line editing on or off for this session
+Not available in native mode: protocol.

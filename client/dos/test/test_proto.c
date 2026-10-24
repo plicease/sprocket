@@ -134,7 +134,7 @@ static void version_mismatch(void)
     reset();
     len = handle(hello2, sizeof hello2, &out);
     CHECK(len == 8 && out[0] == 0xFF && out[4] == ERR_PROTOCOL_MISMATCH
-              && out[5] == PROTO_MAJOR && out[6] == PROTO_MINOR,
+              && out[5] == PROTO_MAJOR && out[6] == cl.minor,
           "major 2 -> PROTOCOL_MISMATCH with the client's version");
     len = handle(bad_magic, sizeof bad_magic, &out);
     CHECK(len == 8 && out[4] == ERR_INVALID_REQUEST, "bad magic refused");

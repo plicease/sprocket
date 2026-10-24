@@ -50,3 +50,53 @@ note   PING seq 5, empty payload (shortest valid frame)
 body   02 3c 5a 05
 crc    68bd
 wire   7e 02 3c 5a 05 bd 68 7e
+
+# Protocol v1.1 file-tree messages (docs/protocol-v1.1.md section 8).
+
+name   tree_stat
+note   STAT seq 2, path "DOCS/README.TXT"
+body   18 3c 5a 02 0f 44 4f 43 53 2f 52 45 41 44 4d 45 2e 54 58 54
+crc    83f7
+wire   7e 18 3c 5a 02 0f 44 4f 43 53 2f 52 45 41 44 4d 45 2e 54 58 54 f7 83 7e
+
+name   tree_stat_reply
+note   STAT reply: file, 5 bytes, 2026-10-23 14:30:58, spelled "docs/readme.txt"
+body   98 3c 5a 02 19 00 05 00 00 00 dd 73 57 5d 0f 64 6f 63 73 2f 72 65 61 64 6d 65 2e 74 78 74
+crc    a831
+wire   7e 98 3c 5a 02 19 00 05 00 00 00 dd 73 57 5d 0f 64 6f 63 73 2f 72 65 61 64 6d 65 2e 74 78 74 31 a8 7e
+
+name   tree_dir_list
+note   DIR_LIST seq 3, index 0, root
+body   19 3c 5a 03 00 00 00
+crc    0156
+wire   7e 19 3c 5a 03 00 00 00 56 01 7e
+
+name   tree_dir_list_reply
+note   DIR_LIST reply: no more, 2 entries: directory GAMES, file A.TXT of 3 bytes, no time
+body   99 3c 5a 03 00 02 0f 01 00 00 00 00 dd 73 57 5d 05 47 41 4d 45 53 0f 00 03 00 00 00 00 00 00 00 05 41 2e 54 58 54
+crc    aede
+wire   7e 99 3c 5a 03 00 02 0f 01 00 00 00 00 dd 73 57 5d 05 47 41 4d 45 53 0f 00 03 00 00 00 00 00 00 00 05 41 2e 54 58 54 de ae 7e
+
+name   tree_file_read
+note   FILE_READ seq 4, offset 1016, length 1016, "GAMES/DOOM.EXE"
+body   1a 3c 5a 04 f8 03 00 00 f8 03 0e 47 41 4d 45 53 2f 44 4f 4f 4d 2e 45 58 45
+crc    c44a
+wire   7e 1a 3c 5a 04 f8 03 00 00 f8 03 0e 47 41 4d 45 53 2f 44 4f 4f 4d 2e 45 58 45 4a c4 7e
+
+name   tree_file_read_reply
+note   FILE_READ reply: size 1020, the last 4 bytes 7e 7d 00 ff
+body   9a 3c 5a 04 fc 03 00 00 dd 73 57 5d 7e 7d 00 ff
+crc    1e56
+wire   7e 9a 3c 5a 04 fc 03 00 00 dd 73 57 5d 7d 5e 7d 5d 00 ff 56 1e 7e
+
+name   tree_file_begin
+note   FILE_BEGIN seq 5, 3 bytes, no replace, "NEW.TXT", trailing mtime
+body   10 3c 5a 05 03 00 00 00 00 07 4e 45 57 2e 54 58 54 dd 73 57 5d
+crc    a249
+wire   7e 10 3c 5a 05 03 00 00 00 00 07 4e 45 57 2e 54 58 54 dd 73 57 5d 49 a2 7e
+
+name   tree_error_exists
+note   ERROR EXISTS (class 10) for the FILE_BEGIN, no detail
+body   ff 3c 5a 05 0a 00 00 00
+crc    13fd
+wire   7e ff 3c 5a 05 0a 00 00 00 fd 13 7e

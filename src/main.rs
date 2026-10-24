@@ -24,10 +24,37 @@ struct Cli {
 enum Command {
     /// Send a file to a receiver using a standard serial transfer protocol
     Send(SendArgs),
-    /// Serve a read-only file menu to a terminal program on the serial line
+    /// Serve a directory to a SPROCKET client (native mode, the default) or
+    /// to a terminal program (--mode terminal)
     Serve(ServeArgs),
-    /// Connect to a SPROCKET client, show what it supports, and ping it
+    /// Connect to a SPROCKET server and browse it with ftp-style commands:
+    /// get, put, ls, cd, and lls, lcd for this machine
+    Client(ClientArgs),
+    /// Connect to a SPROCKET server, show what it supports, and ping it
     Hello(HelloArgs),
+}
+
+#[derive(Args)]
+struct ClientArgs {
+    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
+    #[arg(long)]
+    port: String,
+
+    /// Baud rate (serial devices only); the line is always 8N1, no flow control
+    #[arg(long, default_value_t = 9600)]
+    baud: u32,
+
+    /// Seconds to keep calling the server before giving up
+    #[arg(long, default_value_t = 60)]
+    wait: u64,
+
+    /// Initial line editing mode (history, Tab completion, Ctrl-D to quit)
+    #[arg(long, value_enum, default_value_t = Switch::On)]
+    editing: Switch,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -58,6 +85,12 @@ struct SendArgs {
 
 #[derive(Args)]
 struct ServeArgs {
+    /// native: answer a SPROCKET client (`SPROCKET CLIENT`, `sprocket
+    /// client`). terminal: an ftp-style prompt for a terminal program, with
+    /// downloads by ZMODEM or XMODEM
+    #[arg(long, value_enum, default_value_t = Mode::Native)]
+    mode: Mode,
+
     /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
     #[arg(long)]
     port: String,
@@ -70,22 +103,35 @@ struct ServeArgs {
     #[arg(long)]
     root: PathBuf,
 
+    /// Accept files from the client (put), and let put -f replace them
+    /// (native mode). Without it the directory is read-only
+    #[arg(long)]
+    writable: bool,
+
     /// Seconds without input before a session returns to the banner
+    /// (terminal mode)
     #[arg(long, default_value_t = 600)]
     idle: u64,
 
-    /// Seconds a transfer waits for the receiver to start
+    /// Seconds a transfer waits for the receiver to start (terminal mode)
     #[arg(long, default_value_t = 60)]
     wait: u64,
 
     /// Initial line editing mode for each session (history, Tab completion,
     /// Ctrl-D logout); off suits terminals that send odd keystrokes
+    /// (terminal mode)
     #[arg(long, value_enum, default_value_t = Switch::On)]
     editing: Switch,
 
     /// Append a timestamped byte-level trace of the link to FILE
     #[arg(long, value_name = "FILE")]
     trace: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Mode {
+    Native,
+    Terminal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -104,7 +150,7 @@ struct HelloArgs {
     #[arg(long, default_value_t = 9600)]
     baud: u32,
 
-    /// Seconds to keep calling the client before giving up
+    /// Seconds to keep calling the server before giving up
     #[arg(long, default_value_t = 60)]
     wait: u64,
 
@@ -129,6 +175,7 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Send(args) => send(args),
         Command::Serve(args) => serve(args),
+        Command::Client(args) => client(args),
         Command::Hello(args) => hello(args),
     }
 }
@@ -160,6 +207,9 @@ fn open_link(
 }
 
 fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    if args.writable && args.mode == Mode::Terminal {
+        anyhow::bail!("--writable needs --mode native; terminal mode is always read-only");
+    }
     let root =
         Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
     let trace = open_trace(args.trace.as_ref(), "serve")?;
@@ -175,8 +225,17 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         start_timeout: Duration::from_secs(args.wait),
         editing: args.editing == Switch::On,
     };
+    let native = native::server::Options {
+        writable: args.writable,
+        ..native::server::Options::default()
+    };
+    let what = match (args.mode, args.writable) {
+        (Mode::Terminal, _) => "to a terminal program",
+        (Mode::Native, false) => "to SPROCKET clients, read-only",
+        (Mode::Native, true) => "to SPROCKET clients, writable",
+    };
     log(&format!(
-        "serving {} on {} ({} 8N1, no flow control); press Ctrl-C to stop",
+        "serving {} {what} on {} ({} 8N1, no flow control); press Ctrl-C to stop",
         root.path().display(),
         args.port,
         args.baud
@@ -186,7 +245,11 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         match open_link(&args.port, args.baud, trace.as_ref()) {
             Ok(mut link) => {
                 log(&format!("connected to {}", args.port));
-                if let Err(e) = serve::run(link.as_mut(), &root, &options, &mut log) {
+                let result = match args.mode {
+                    Mode::Terminal => serve::run(link.as_mut(), &root, &options, &mut log),
+                    Mode::Native => native::server::run(link.as_mut(), &root, &native, &mut log),
+                };
+                if let Err(e) = result {
                     log(&format!("connection lost: {e}"));
                 }
             }
@@ -194,6 +257,46 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         std::thread::sleep(Duration::from_secs(5));
     }
+}
+
+fn client(args: ClientArgs) -> anyhow::Result<()> {
+    let trace = open_trace(args.trace.as_ref(), "client")?;
+    let mut link = open_link(&args.port, args.baud, trace.as_ref())
+        .with_context(|| format!("cannot open {}", args.port))?;
+    let note = |msg: &str| {
+        if let Some(trace) = &trace {
+            trace.note(msg);
+        }
+    };
+    let options = session::Options {
+        baud: args.baud,
+        wait: Duration::from_secs(args.wait),
+        ..session::Options::default()
+    };
+    eprintln!(
+        "calling the server on {}; waiting up to {}s",
+        args.port, args.wait
+    );
+    let observer = |event: &native::link::Event| {
+        if let native::link::Event::Retransmit { seq, attempt } = event
+            && *seq != 0
+        {
+            note(&format!("retransmitting request {seq} (attempt {attempt})"));
+        }
+    };
+    let session = session::Session::connect(link.as_mut(), &options, observer)
+        .context("cannot start a session")?;
+    let local = std::env::current_dir().context("cannot find the current directory")?;
+    let options = sprocket::client::Options {
+        editing: args.editing == Switch::On,
+    };
+    let mut terminal = sprocket::terminal::Terminal::new().context("cannot set up the terminal")?;
+    let result = sprocket::client::run(&mut terminal, session, &local, &options);
+    drop(terminal);
+    if let Err(e) = &result {
+        note(&format!("{e:#}"));
+    }
+    result
 }
 
 fn hello(args: HelloArgs) -> anyhow::Result<()> {
@@ -212,7 +315,7 @@ fn hello(args: HelloArgs) -> anyhow::Result<()> {
         ..session::Options::default()
     };
     eprintln!(
-        "calling the client on {}; waiting up to {}s",
+        "calling the server on {}; waiting up to {}s",
         args.port, args.wait
     );
     let result = hello_session(&args, link.as_mut(), &options, &log);
@@ -233,7 +336,7 @@ fn hello_session(
     let observer = |event: &native::link::Event| {
         use native::link::Event;
         match event {
-            // Seq 0 is the HELLO, repeated until the client answers.
+            // Seq 0 is the HELLO, repeated until the server answers.
             Event::Retransmit { seq: 0, .. } | Event::Pending { .. } => {}
             Event::Retransmit { seq, attempt } => {
                 log(&format!("retransmitting request {seq} (attempt {attempt})"))
@@ -249,7 +352,7 @@ fn hello_session(
         session::Session::connect(link, options, observer).context("cannot start a session")?;
     let client = session.client().clone();
     println!(
-        "session {:04x}: client {} on {}, protocol {}.{}",
+        "session {:04x}: server {} on {}, protocol {}.{}",
         session.session_id(),
         if client.version.is_empty() {
             "(no version)"
@@ -261,7 +364,7 @@ fn hello_session(
         client.minor,
     );
     println!(
-        "max payload: client {} bytes, negotiated {} bytes",
+        "max payload: server {} bytes, negotiated {} bytes",
         client.max_payload,
         session.max_payload()
     );

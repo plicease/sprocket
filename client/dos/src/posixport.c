@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Host platform layer for testing the client on Linux: a tty or PTY in raw
- * mode. Esc is not read; stop it with Ctrl-C.
+ * Host platform layer for testing the program on Linux: a tty or PTY in
+ * raw mode. Esc is not read; stop it with Ctrl-C. Keys for the client's
+ * prompt come from standard input, which may be a pipe.
  */
 #define _DEFAULT_SOURCE
 #include <errno.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include "port.h"
 
 static int fd = -1;
+static struct termios saved_stdin;
 
 static speed_t speed(long baud)
 {
@@ -103,4 +106,38 @@ uint16_t port_ticks_per_second(void)
 int port_escape(void)
 {
     return 0;
+}
+
+static void restore_stdin(void)
+{
+    tcsetattr(0, TCSANOW, &saved_stdin);
+}
+
+int port_key(void)
+{
+    static int ready;
+    struct termios t;
+    struct pollfd p;
+    unsigned char c;
+
+    if (!ready) {
+        ready = 1;
+        /* Keys one at a time, without the terminal's echo; Ctrl-C still
+         * raises SIGINT. */
+        if (isatty(0) && tcgetattr(0, &saved_stdin) == 0) {
+            t = saved_stdin;
+            t.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+            t.c_cc[VMIN] = 1;
+            t.c_cc[VTIME] = 0;
+            tcsetattr(0, TCSANOW, &t);
+            atexit(restore_stdin);
+        }
+    }
+    fflush(stdout);
+    p.fd = 0;
+    p.events = POLLIN;
+    if (poll(&p, 1, 10) <= 0) {
+        return PORT_NO_KEY;
+    }
+    return read(0, &c, 1) == 1 ? c : PORT_EOF;
 }

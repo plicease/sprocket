@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 /// A browsable directory tree.
+#[derive(Clone, Debug)]
 pub struct Root {
     path: PathBuf,
 }
@@ -126,11 +127,7 @@ impl Root {
                 None => match (similar.next(), similar.next()) {
                     (Some(only), None) => only,
                     (None, _) => return Err(hidden(rel)),
-                    (Some(_), Some(_)) => {
-                        return Err(io::Error::other(
-                            "several names differ only in case; type the exact name",
-                        ));
-                    }
+                    (Some(_), Some(_)) => return Err(ambiguous()),
                 },
             };
             found.push(&entry.name);
@@ -175,6 +172,27 @@ pub struct Contents {
     pub data: Vec<u8>,
     pub modified: Option<SystemTime>,
 }
+
+/// The error for a name that several entries match ignoring case.
+pub fn ambiguous() -> io::Error {
+    io::Error::other(Ambiguous)
+}
+
+/// Whether `e` came from [`ambiguous`].
+pub fn is_ambiguous(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<Ambiguous>())
+}
+
+#[derive(Debug)]
+struct Ambiguous;
+
+impl std::fmt::Display for Ambiguous {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("several names differ only in case; type the exact name")
+    }
+}
+
+impl std::error::Error for Ambiguous {}
 
 fn is_hidden(name: &std::ffi::OsStr) -> bool {
     name.as_encoded_bytes().starts_with(b".")

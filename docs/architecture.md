@@ -23,9 +23,12 @@ SPROCKET provides (1) serial file transfer, including to systems without a SPROC
 Rust host CLI
   ├── transports: serial port / TCP (emulator) / in-memory (tests)
   ├── standard-protocol senders (XMODEM, XMODEM-1K, ZMODEM)
-  ├── terminal file server (`sprocket serve`)
-  │     ├── ftp-style commands, line editing and Tab completion
-  │     └── root-confined, read-only file tree
+  ├── command shell shared by terminal mode and the native client (`shell`)
+  │     ├── ftp-style commands, line editing and Tab completion (`console`)
+  │     └── root-confined file tree, read-only unless --writable (`files`)
+  ├── terminal file server (`sprocket serve --mode terminal`)
+  ├── native file transfer: client shell (`sprocket client`) and server
+  │     (`sprocket serve`, `native::server`)
   ├── native SPROCKET protocol engine (`native`)
   │     ├── framing and CRC-16 (`native::frame`)
   │     ├── stop-and-wait requests and retransmission (`native::link`)
@@ -39,6 +42,8 @@ Rust host CLI
       platform-specific client
        ├── serial hardware adapter
        ├── local filesystem adapter
+       ├── server role: file tree for the host's client
+       ├── client role: the same shell, browsing the host's tree
        └── disk access adapter
 ```
 
