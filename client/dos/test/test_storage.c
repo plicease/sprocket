@@ -27,10 +27,10 @@ static int failures;
         }                                                                          \
     } while (0)
 
-/* The stub disks: a 360K floppy and a small fixed disk. */
+/* The stub disks: a 360K floppy in a 1.2M drive, and a small fixed disk. */
 static struct disk stub[2] = {
-    {0x00, 1, 40, 2, 9, "BIOS 00 (A:) 360K"},
-    {0x80, 0, 100, 4, 17, "BIOS 80 fixed"},
+    {0x00, 1, 40, 2, 9, 80, 2, 15, "BIOS 00 (A:) 360K"},
+    {0x80, 0, 100, 4, 17, 100, 4, 17, "BIOS 80 fixed"},
 };
 static uint8_t stub_count = 2;
 
@@ -145,16 +145,18 @@ static void test_list(void)
 
     CHECK(storage_init() == 2);
     n = request(MSG_STORAGE_LIST, NULL, 0, LIMIT);
-    CHECK(n == 1 + 2 * 20 + 17 + 13);
+    CHECK(n == 1 + 2 * 26 + 17 + 13);
     CHECK(out[0] == 2);
     p = out + 1;
-    CHECK(p[0] == 19 + 17);
+    CHECK(p[0] == 25 + 17);
     CHECK(p[1] == 0 && p[2] == 1 && p[3] == 0x02);
     CHECK(get16(p + 4) == 512);
     CHECK(get16(p + 6) == 720 && get16(p + 8) == 0);
     CHECK(get16(p + 10) == 40 && p[12] == 2 && p[13] == 9 && p[14] == 1);
-    CHECK(p[15] == 3 && p[16] == 1 && p[17] == 1 && p[18] == 0x00);
-    CHECK(p[19] == 17 && memcmp(p + 20, "BIOS 00 (A:) 360K", 17) == 0);
+    CHECK(p[15] == 9 && p[16] == 1 && p[17] == 1 && p[18] == 0x00);
+    /* The drive's geometry, beside the probed medium's. */
+    CHECK(p[19] == 2 && p[20] == 4 && get16(p + 21) == 80 && p[23] == 2 && p[24] == 15);
+    CHECK(p[25] == 17 && memcmp(p + 26, "BIOS 00 (A:) 360K", 17) == 0);
     p += 1 + p[0];
     CHECK(p[1] == 1 && p[2] == 2);
     CHECK(get16(p + 6) == 6800);
@@ -235,6 +237,14 @@ static void test_fallback(void)
     CHECK(reads == 4 && out[1] == 0 && out[4] == 0 && out[7] == 0);
 }
 
+/* Past the probed medium but within the drive: the host may know the
+ * disk better than the probe. */
+static void test_beyond_the_probe(void)
+{
+    CHECK(read_chs(0, 79, 1, 10, 6, 0, LIMIT) == 1 + 6 * 515);
+    CHECK(all(out + 1 + 18, stamp(79, 1, 10)));
+}
+
 static void test_refusals(void)
 {
     uint8_t linear[10] = {0, 1, 0, 0, 0, 0, 1, 0, 0, 0};
@@ -244,10 +254,10 @@ static void test_refusals(void)
     CHECK(request(MSG_STORAGE_READ, linear, 1, LIMIT) == -1);
     CHECK(class == ERR_INVALID_REQUEST);
     CHECK(read_chs(2, 0, 0, 1, 1, 0, LIMIT) == -1);  /* no such device */
-    CHECK(read_chs(0, 40, 0, 1, 1, 0, LIMIT) == -1); /* past the cylinders */
+    CHECK(read_chs(0, 80, 0, 1, 1, 0, LIMIT) == -1); /* past the cylinders */
     CHECK(read_chs(0, 0, 2, 1, 1, 0, LIMIT) == -1);  /* past the heads */
     CHECK(read_chs(0, 0, 0, 0, 1, 0, LIMIT) == -1);  /* sector 0 */
-    CHECK(read_chs(0, 0, 0, 8, 3, 0, LIMIT) == -1);  /* off the track */
+    CHECK(read_chs(0, 0, 0, 14, 3, 0, LIMIT) == -1); /* off the track */
     CHECK(read_chs(0, 0, 0, 1, 0, 0, LIMIT) == -1);  /* nothing */
     CHECK(class == ERR_INVALID_REQUEST);
     CHECK(reads == 0);
@@ -262,6 +272,7 @@ int main(void)
     test_list();
     test_track_read();
     test_fallback();
+    test_beyond_the_probe();
     test_refusals();
     if (failures) {
         fprintf(stderr, "test_storage: %d failure(s)\n", failures);

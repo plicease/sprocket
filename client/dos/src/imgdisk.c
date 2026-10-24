@@ -85,6 +85,9 @@ uint8_t disk_find(struct disk *disks, uint8_t max)
             continue;
         }
         disks[n].bios = (uint8_t)(disks[n].removable ? n : 0x80 + n);
+        disks[n].max_cylinders = disks[n].cylinders;
+        disks[n].max_heads = disks[n].heads;
+        disks[n].max_sectors = disks[n].sectors;
         strcpy(paths[n], path);
         n++;
     }

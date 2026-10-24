@@ -8,7 +8,11 @@
  * For a floppy, function 08h gives the drive's geometry, not the disk's:
  * a 360K disk in a 1.2M drive reports 15 sectors a track. The inserted
  * disk is probed by reading the last sector of the first track for each
- * standard size, largest first.
+ * standard size, largest first; for 8 or 9 sectors in a 1.2M drive, a
+ * sector on cylinder 79 tells 80 tracks from 40. A probe can be fooled (by
+ * a bad sector, say), so the host shows the geometry and lets the
+ * operator change it; reads are allowed anywhere within the drive's
+ * geometry.
  *
  * INT 13h fails (status 09h) when a read would cross a 64 KB physical
  * boundary, which depends on where DOS loaded the program. A multi-sector
@@ -107,18 +111,21 @@ static int parameters(uint8_t drive, struct disk *d)
     d->cylinders = (uint16_t)((r.h.ch | ((r.h.cl & 0xC0) << 2)) + 1);
     d->heads = (uint8_t)(r.h.dh + 1);
     d->sectors = (uint8_t)(r.h.cl & 0x3F);
+    d->max_cylinders = d->cylinders;
+    d->max_heads = d->heads;
+    d->max_sectors = d->sectors;
     return 1;
 }
 
-/* Read sector `sector` of the first track, with a retry for the motor
- * starting and a disk change. */
-static int readable(const struct disk *d, uint8_t sector)
+/* Read a sector of head 0, with a retry for the motor starting and a disk
+ * change. */
+static int readable(const struct disk *d, uint16_t cylinder, uint8_t sector)
 {
     int attempt;
     uint8_t status;
 
     for (attempt = 0; attempt < 3; attempt++) {
-        status = disk_read(d, 0, 0, sector, 1, bounce);
+        status = disk_read(d, cylinder, 0, sector, 1, bounce);
         if (status == DISK_OK || status == DISK_CORRECTED) {
             return 1;
         }
@@ -139,12 +146,14 @@ static void probe(struct disk *d)
     unsigned i;
 
     for (i = 0; i < sizeof sizes; i++) {
-        if (sizes[i] > drive_sectors || !readable(d, sizes[i])) {
+        if (sizes[i] > drive_sectors || !readable(d, 0, sizes[i])) {
             continue;
         }
         d->sectors = sizes[i];
-        /* 8 or 9 sectors in a high-density 5.25" drive: a 40-track disk. */
-        if (sizes[i] <= 9 && drive_sectors == 15) {
+        /* 8 or 9 sectors in a high-density 5.25" drive: usually a 40-track
+         * disk, whose sector IDs say cylinder 39 where the drive's
+         * cylinder 79 is. */
+        if (sizes[i] <= 9 && drive_sectors == 15 && !readable(d, 79, 1)) {
             d->cylinders = 40;
         }
         return;

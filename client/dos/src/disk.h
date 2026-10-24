@@ -26,10 +26,16 @@ struct disk {
     uint8_t bios; /* BIOS drive number */
     uint8_t removable;
     /* Geometry of the medium; cylinders is 0 when there is none (no disk
-     * in the drive, or it could not be determined). */
+     * in the drive, or it could not be determined). For a floppy it is
+     * probed, so it can be wrong. */
     uint16_t cylinders;
     uint8_t heads;
     uint8_t sectors;
+    /* The drive's largest geometry, as the BIOS reports it: reads are
+     * allowed anywhere within it. */
+    uint16_t max_cylinders;
+    uint8_t max_heads;
+    uint8_t max_sectors;
     char label[DISK_LABEL_MAX + 1];
 };
 

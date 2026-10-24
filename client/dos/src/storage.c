@@ -22,6 +22,10 @@
 #define MODE_LINEAR 1
 #define MODE_CHS 2
 #define META_BIOS_DRIVE 1
+#define META_DRIVE_GEOMETRY 2
+/* meta: the BIOS drive (tag, length, value) and the drive's geometry
+ * (tag, length, cylinders u16, heads, sectors). */
+#define META_LEN (3 + 6)
 
 static struct disk disks[DISK_MAX];
 static uint8_t disk_count;
@@ -71,11 +75,11 @@ static int list_request(uint8_t *out, uint16_t limit, uint8_t *class)
     out[0] = disk_count;
     for (i = 0; i < disk_count; i++) {
         label = strlen(disks[i].label);
-        if (used + 1 + DESC_FIXED + 4 + 1 + label > limit) {
+        if (used + 1 + DESC_FIXED + 1 + META_LEN + 1 + label > limit) {
             return fail(class, ERR_INVALID_REQUEST);
         }
         p = out + used;
-        p[0] = (uint8_t)(DESC_FIXED + 4 + 1 + label);
+        p[0] = (uint8_t)(DESC_FIXED + 1 + META_LEN + 1 + label);
         p[1] = i;
         p[2] = disks[i].removable ? KIND_REMOVABLE : KIND_FIXED;
         p[3] = disks[i].cylinders ? ADDR_CHS : 0;
@@ -85,13 +89,17 @@ static int list_request(uint8_t *out, uint16_t limit, uint8_t *class)
         p[12] = disks[i].heads;
         p[13] = disks[i].sectors;
         p[14] = 1;
-        /* meta: the BIOS drive number. */
-        p[15] = 3;
+        p[15] = META_LEN;
         p[16] = META_BIOS_DRIVE;
         p[17] = 1;
         p[18] = disks[i].bios;
-        p[19] = (uint8_t)label;
-        memcpy(p + 20, disks[i].label, label);
+        p[19] = META_DRIVE_GEOMETRY;
+        p[20] = 4;
+        put16(p + 21, disks[i].max_cylinders);
+        p[23] = disks[i].max_heads;
+        p[24] = disks[i].max_sectors;
+        p[25] = (uint8_t)label;
+        memcpy(p + 26, disks[i].label, label);
         used = (uint16_t)(used + 1 + p[0]);
     }
     return used;
@@ -127,9 +135,10 @@ static int read_request(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16
     sector = in[5];
     count = in[6];
     retries = in[7];
-    /* Within the medium, on one track, and fitting the response. */
-    if (count == 0 || cylinder >= d->cylinders || head >= d->heads || sector == 0
-        || sector - 1 + count > d->sectors
+    /* Within the drive (the host may know the medium better than the
+     * probe did), on one track, and fitting the response. */
+    if (count == 0 || cylinder >= d->max_cylinders || head >= d->max_heads || sector == 0
+        || sector - 1 + count > d->max_sectors
         || 1 + (uint32_t)count * (3 + DISK_SECTOR) > limit) {
         return fail(class, ERR_INVALID_REQUEST);
     }

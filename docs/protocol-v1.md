@@ -320,7 +320,7 @@ A count (u8), then one descriptor per device. Each descriptor starts with its ow
 | `sectors` | u8 | sectors per track |
 | `first_sector` | u8 | number of the first sector (1 for PC BIOS) |
 | `meta_len` | u8 | length of `meta`, at most 64 |
-| `meta` | bytes | platform metadata as TLV (`tag` u8, `len` u8, value). DOS: tag 1 = BIOS drive number. |
+| `meta` | bytes | platform metadata as TLV (`tag` u8, `len` u8, value). DOS: tag 1 = BIOS drive number; tag 2 = the drive's largest geometry (cylinders u16, heads u8, sectors u8), within which CHS reads are accepted even past the medium's (probed) geometry. Unknown tags are skipped. |
 | `label_len` | u8 | length of `label`, at most 64 |
 | `label` | ASCII | human-readable description, e.g. `"BIOS 00 (A:) 1.44M"` |
 
