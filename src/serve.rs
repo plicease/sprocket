@@ -504,6 +504,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn ls_recursive_survives_symlink_loop() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("a")).unwrap();

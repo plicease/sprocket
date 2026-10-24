@@ -162,9 +162,14 @@ pub fn dos_time(time: Option<SystemTime>) -> u32 {
     else {
         return 0;
     };
-    // SAFETY: localtime_r writes only to `tm`, which is a plain struct.
+    // SAFETY: localtime_r and localtime_s write only to `tm`, which is a
+    // plain struct.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+    #[cfg(unix)]
+    let failed = unsafe { libc::localtime_r(&secs, &mut tm) }.is_null();
+    #[cfg(windows)]
+    let failed = unsafe { libc::localtime_s(&mut tm, &secs) } != 0;
+    if failed {
         return 0;
     }
     let year = tm.tm_year + 1900;
@@ -202,10 +207,21 @@ pub fn system_time(dos: u32) -> Option<SystemTime> {
     tm.tm_min = minute as i32;
     tm.tm_sec = second as i32;
     tm.tm_isdst = -1;
-    let secs = unsafe { libc::mktime(&mut tm) };
+    let secs = unsafe { mktime(&mut tm) };
     u64::try_from(secs)
         .ok()
         .map(|s| UNIX_EPOCH + Duration::from_secs(s))
+}
+
+#[cfg(unix)]
+use libc::mktime;
+
+// The libc crate does not bind mktime for the Windows CRT, where the
+// 64-bit `time_t` version is `_mktime64`.
+#[cfg(windows)]
+unsafe extern "C" {
+    #[link_name = "_mktime64"]
+    fn mktime(tm: *mut libc::tm) -> libc::time_t;
 }
 
 /// CRC-32 (IEEE 802.3), as `FILE_COMMIT` uses.
