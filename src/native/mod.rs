@@ -10,4 +10,5 @@ pub mod link;
 mod mock;
 pub mod server;
 pub mod session;
+pub mod storage;
 pub mod tree;
