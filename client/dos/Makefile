@@ -37,8 +37,10 @@ build:
 # frame, so -k8192 gives a stack of 8 KB, several times what is used.
 DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we -k8192
 
-DOS_SRC := $(CORE) $(TREE) $(CLIENT) src/dosfs.c src/dosport.c src/main.c
-HOST_SRC := $(CORE) $(TREE) $(CLIENT) src/posixfs.c src/posixport.c src/main.c
+DOS_SRC := $(CORE) $(TREE) $(CLIENT) src/storage.c src/biosdisk.c src/dosfs.c src/dosport.c \
+	src/main.c
+HOST_SRC := $(CORE) $(TREE) $(CLIENT) src/storage.c src/imgdisk.c src/posixfs.c \
+	src/posixport.c src/main.c
 
 build/SPROCKET.EXE: $(DOS_SRC) $(HEADERS) | build
 	cd build && $(WCL) $(DOS_CFLAGS) -fe=SPROCKET.EXE $(addprefix ../,$(DOS_SRC))
