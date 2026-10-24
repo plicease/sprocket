@@ -79,11 +79,22 @@ static int same_name(const char *a, const char *b, size_t blen)
 void tree_init(const char *dir, int allow_writes)
 {
     size_t len = strlen(dir);
+#if FS_SEP == '\\'
+    size_t i;
+#endif
 
     if (len > FS_PATH_MAX) {
         len = FS_PATH_MAX;
     }
     memcpy(root, dir, len);
+#if FS_SEP == '\\'
+    /* DOS takes either separator; paths are built with backslashes. */
+    for (i = 0; i < len; i++) {
+        if (root[i] == '/') {
+            root[i] = '\\';
+        }
+    }
+#endif
     /* Without a trailing separator, unless that is all there is. */
     while (len > 1 && (root[len - 1] == '/' || root[len - 1] == '\\')
            && root[len - 2] != ':') {
