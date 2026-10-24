@@ -558,9 +558,6 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
                 counts.captured,
                 source.unit_count
             )),
-            capture::Event::MapUnusable(why) => line(&format!(
-                "the progress map is unusable ({why}); reading every unit again"
-            )),
             capture::Event::UnitFailed { unit, code } => {
                 line(&format!("unit {unit} could not be read (code {code:#06x})"))
             }

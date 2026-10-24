@@ -141,8 +141,6 @@ pub enum Event {
         counts: Counts,
         units_per_read: usize,
     },
-    /// The map could not be used, so every unit will be read again.
-    MapUnusable(String),
     /// A response was handled.
     Progress { counts: Counts },
     /// A unit could not be read.
@@ -165,6 +163,12 @@ pub enum Error {
     /// The image exists without a progress map, so it is not ours to
     /// change.
     ImageExists(PathBuf),
+    /// The progress map is damaged, so nothing says which of the image's
+    /// units are good; the image and map are left as they are.
+    MapUnusable {
+        map: PathBuf,
+        why: String,
+    },
     NoStorage,
     NoDevice(u8),
     /// The device offers no addressing this host can use, or its units do
@@ -189,6 +193,12 @@ impl fmt::Display for Error {
                 f,
                 "{} exists and has no progress map; refusing to overwrite it",
                 path.display()
+            ),
+            Error::MapUnusable { map, why } => write!(
+                f,
+                "the progress map {} is unusable ({why}); the image and map are left \
+                 untouched: image to a new file, or move them aside to start again",
+                map.display()
             ),
             Error::NoStorage => {
                 f.write_str("the server offers no disks (on DOS, start it with /D)")
@@ -241,7 +251,7 @@ pub fn capture(
     events: &mut dyn FnMut(&Event),
 ) -> Result<Summary, Error> {
     let paths = Paths::new(image);
-    let mut existing = existing_map(&paths, events)?;
+    let mut existing = existing_map(&paths)?;
     let mut capture: Option<Capture> = None;
     let mut previous_session = None;
     let mut lost = 0;
@@ -294,8 +304,9 @@ pub fn capture(
 }
 
 /// The map to resume from: `None` for a new image. An image without a map
-/// is refused; a map that does not load means reading everything again.
-fn existing_map(paths: &Paths, events: &mut dyn FnMut(&Event)) -> Result<Option<Map>, Error> {
+/// is refused, and so is a map that does not load: the image may hold
+/// units that cannot be read again, and nothing says which.
+fn existing_map(paths: &Paths) -> Result<Option<Map>, Error> {
     match Map::load(&paths.map) {
         Ok(map) => Ok(Some(map)),
         Err(LoadError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
@@ -306,32 +317,10 @@ fn existing_map(paths: &Paths, events: &mut dyn FnMut(&Event)) -> Result<Option<
             }
         }
         Err(LoadError::Io(e)) => Err(e.into()),
-        Err(LoadError::Invalid(why)) => {
-            events(&Event::MapUnusable(why));
-            // Read everything again into the same image.
-            Ok(Some(Map::new(
-                Source {
-                    unit_count: 0,
-                    ..placeholder_source()
-                },
-                Mode::Raw,
-            )))
-        }
-    }
-}
-
-/// A source that matches nothing, standing in for an unusable map's.
-fn placeholder_source() -> Source {
-    Source {
-        device: 0,
-        label: String::new(),
-        kind: String::new(),
-        unit_size: 0,
-        unit_count: 0,
-        geometry: None,
-        bios_drive: None,
-        client_platform: String::new(),
-        client_version: String::new(),
+        Err(LoadError::Invalid(why)) => Err(Error::MapUnusable {
+            map: paths.map.clone(),
+            why,
+        }),
     }
 }
 
@@ -421,7 +410,7 @@ impl<'o> Capture<'o> {
         }
         let capacity = device.capacity();
         let (map, image, resumed) = match existing {
-            Some(mut map) if map.units() != 0 => {
+            Some(mut map) => {
                 if map.source.unit_size != source.unit_size
                     || map.source.unit_count != source.unit_count
                 {
@@ -440,22 +429,12 @@ impl<'o> Capture<'o> {
                 map.trim_to(image.metadata()?.len());
                 (map, image, true)
             }
-            unusable => {
-                // A new image, or one whose map was unusable.
-                let image = if unusable.is_some() {
-                    OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(&paths.image)?
-                } else {
-                    OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create_new(true)
-                        .open(&paths.image)?
-                };
+            None => {
+                let image = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&paths.image)?;
                 let mut map = Map::new(source.clone(), Mode::Raw);
                 map.started = manifest::seconds(SystemTime::now());
                 (map, image, false)
@@ -1255,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn a_torn_map_means_reading_everything_again() {
+    fn a_damaged_map_leaves_the_image_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let image = tmp.path().join("disk.img");
         let disk = Arc::new(MemoryDisk::new(50, 512, None));
@@ -1268,10 +1247,17 @@ mod tests {
         let text = fs::read(&map).unwrap();
         fs::write(&map, &text[..text.len() / 2]).unwrap();
 
-        let (result, events) = run(&disk, &image, &options(), &mut never);
-        assert!(result.unwrap().complete);
-        assert!(matches!(events[0], Event::MapUnusable(_)));
-        assert_eq!(fs::read(&image).unwrap(), disk.image());
+        let held = fs::read(&image).unwrap();
+        let reads = disk.reads().len();
+
+        let (result, _) = run(&disk, &image, &options(), &mut never);
+        assert!(
+            matches!(result, Err(Error::MapUnusable { .. })),
+            "{result:?}"
+        );
+        assert_eq!(fs::read(&image).unwrap(), held);
+        assert_eq!(fs::read(&map).unwrap(), &text[..text.len() / 2]);
+        assert_eq!(disk.reads().len(), reads);
     }
 
     fn recovering(passes: u32) -> Options {

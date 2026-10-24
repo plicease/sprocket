@@ -61,7 +61,7 @@ It also records the source identity (below), the unit size and count, and the ho
 
 - A unit is marked **captured only after its bytes are durable**: the host writes the data, syncs the image file (`fsync`), and only then records the units in the map.
 - The map is updated by writing a new copy and renaming it over the old one (or by appending checksummed records to a journal), so that a crash leaves either the old map or the new one.
-- On load, a map that is torn, fails its checksum, or does not match the image is treated conservatively: every unit it cannot vouch for is **missing**, and is read again. Over-reading is cheap; trusting a bad map is not.
+- On load, a map that is torn or fails its checksum is **refused**, and the image and map are left untouched. Nothing then says which of the image's units are good, and the image may hold units of failing media that cannot be read again, so rereading into it could destroy them. The operator images to a new file, or moves the old files aside. A valid map that does not match the image (an image shorter than the map says) is treated conservatively: every unit beyond the image's end is **missing**, and is read again.
 - Syncing after every response would be slow; the host may batch, as long as no unit is marked captured before a sync that covers it.
 
 ### Restarting
