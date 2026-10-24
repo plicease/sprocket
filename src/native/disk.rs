@@ -133,7 +133,7 @@ impl Disk for ImageDisk {
 pub(crate) use memory::MemoryDisk;
 
 #[cfg(test)]
-mod memory {
+pub(crate) mod memory {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::thread;

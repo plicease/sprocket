@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Native protocol responder serving a directory tree: `sprocket serve
-//! --mode native` (`docs/protocol-v1.1.md`).
+//! --mode native` (`docs/protocol-v1.1.md`), and optionally disks to image
+//! (`docs/protocol-v1.md` section 6).
 //!
 //! It answers one request at a time with the duplicate rules of v1
 //! section 2, so a retransmitted request is never executed twice, and
@@ -12,11 +13,14 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use super::disk::Disk;
 use super::frame::{Decoder, Event as FrameEvent, Frame, MAX_PAYLOAD, MIN_PAYLOAD, crc16};
 use super::link::{ERROR, INTER_BYTE_TIMEOUT, RESPONSE};
 use super::session::{CLOSE, Capabilities, ErrorClass, Fields, HELLO, MAGIC, PING, Platform};
+use super::storage::{self, Address, ReadRequest};
 use super::tree::{self, Crc32, Entry};
 use crate::files::{Kind, Root};
 use crate::transport::Transport;
@@ -30,6 +34,8 @@ pub struct Options {
     pub max_payload: usize,
     /// Abandon a partial frame after this long without a byte.
     pub inter_byte: Duration,
+    /// Disks offered for imaging, numbered from 0 in this order.
+    pub disks: Vec<Arc<dyn Disk>>,
 }
 
 impl Default for Options {
@@ -38,6 +44,7 @@ impl Default for Options {
             writable: false,
             max_payload: MAX_PAYLOAD,
             inter_byte: INTER_BYTE_TIMEOUT,
+            disks: Vec::new(),
         }
     }
 }
@@ -256,6 +263,12 @@ impl<'a> Server<'a> {
                 self.discard_upload();
                 Ok((kind, Vec::new()))
             }
+            storage::STORAGE_LIST if !self.options.disks.is_empty() => {
+                self.storage_list().map(|payload| (kind, payload))
+            }
+            storage::STORAGE_READ if !self.options.disks.is_empty() => {
+                self.storage_read(p).map(|payload| (kind, payload))
+            }
             _ => Err(Refusal::new(ErrorClass::Unsupported)),
         }
     }
@@ -279,6 +292,12 @@ impl<'a> Server<'a> {
         let mut caps = Capabilities::FILE_TREE;
         if self.options.writable {
             caps |= Capabilities::FILE_WRITE | Capabilities::FILE_REPLACE;
+        }
+        if !self.options.disks.is_empty() {
+            caps |= Capabilities::STORAGE_LIST | Capabilities::STORAGE_READ_UNITS;
+            if self.options.disks.iter().any(|d| d.describe().chs()) {
+                caps |= Capabilities::STORAGE_READ_CHS;
+            }
         }
         let version = env!("CARGO_PKG_VERSION");
         let mut out = MAGIC.to_vec();
@@ -486,6 +505,62 @@ impl<'a> Server<'a> {
         Ok(ours.to_le_bytes().to_vec())
     }
 
+    fn storage_list(&self) -> Result<Vec<u8>, Refusal> {
+        let devices: Vec<_> = self
+            .options
+            .disks
+            .iter()
+            .enumerate()
+            .map(|(i, disk)| storage::Descriptor {
+                device: i as u8,
+                ..disk.describe()
+            })
+            .take(usize::from(u8::MAX))
+            .collect();
+        let out = storage::encode_list(&devices);
+        if out.len() > self.send_limit {
+            return Err(Refusal::new(ErrorClass::InvalidRequest));
+        }
+        Ok(out)
+    }
+
+    fn storage_read(&self, p: &[u8]) -> Result<Vec<u8>, Refusal> {
+        let request = ReadRequest::decode(p).map_err(|_| Refusal::invalid())?;
+        let disk = self
+            .options
+            .disks
+            .get(usize::from(request.device))
+            .ok_or(Refusal::invalid())?;
+        let d = disk.describe();
+        let count = u32::from(request.count);
+        let start = match request.address {
+            Address::Linear(unit) if d.linear() => unit,
+            Address::Chs {
+                cylinder,
+                head,
+                sector,
+            } if d.chs() => {
+                let g = d.geometry.ok_or(Refusal::invalid())?;
+                let unit = g.linear(cylinder, head, sector).ok_or(Refusal::invalid())?;
+                // A CHS read stays within one track.
+                if u32::from(sector - g.first_sector) + count > u32::from(g.sectors) {
+                    return Err(Refusal::invalid());
+                }
+                unit
+            }
+            _ => return Err(Refusal::invalid()),
+        };
+        let fits = storage::read_response_len(usize::from(request.count), usize::from(d.unit_size))
+            <= self.send_limit;
+        if !fits || u64::from(start) + u64::from(count) > u64::from(d.unit_count) {
+            return Err(Refusal::invalid());
+        }
+        let units: Vec<_> = (start..start + count)
+            .map(|unit| disk.read(unit, request.retries))
+            .collect();
+        Ok(storage::encode_read_response(&units))
+    }
+
     /// Delete the file being received, if any.
     fn discard_upload(&mut self) {
         if let Some(up) = self.upload.take() {
@@ -535,7 +610,10 @@ fn tree_path(rel: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::disk::memory::Fault;
+    use crate::native::disk::{ImageDisk, MemoryDisk};
     use crate::native::session::{self, ClientInfo, Error, Session};
+    use crate::native::storage::Unit;
     use crate::transport::memory_pair;
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
@@ -868,5 +946,206 @@ mod tests {
             })
             .count();
         assert_eq!(temps, 1, "only the lookalike is left");
+    }
+
+    fn with_disks(disks: Vec<Arc<dyn Disk>>) -> Options {
+        Options {
+            disks,
+            ..Options::default()
+        }
+    }
+
+    fn geometry(cylinders: u16, heads: u8, sectors: u8) -> storage::Geometry {
+        storage::Geometry {
+            cylinders,
+            heads,
+            sectors,
+            first_sector: 1,
+        }
+    }
+
+    fn read(device: u8, address: Address, count: u8) -> ReadRequest {
+        ReadRequest {
+            device,
+            address,
+            count,
+            retries: 0,
+        }
+    }
+
+    #[test]
+    fn disks_are_listed_and_read() {
+        let tmp = tree();
+        let memory = Arc::new(MemoryDisk::new(100, 512, Some(geometry(10, 2, 5))));
+        let floppy = tmp.path().join("floppy.img");
+        fs::write(&floppy, vec![0xE5; 368_640]).unwrap();
+        let image = Arc::new(ImageDisk::open(&floppy, None).unwrap());
+        let options = with_disks(vec![memory.clone(), image]);
+        connect(tmp.path(), options, 4090, |s| {
+            assert!(s.has_storage());
+            assert_eq!(
+                s.client().capabilities.to_string(),
+                "STORAGE_LIST, STORAGE_READ_UNITS, STORAGE_READ_CHS, FILE_TREE"
+            );
+            let list = s.storage_list().unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!((list[0].device, list[0].unit_count), (0, 100));
+            assert_eq!(
+                (list[1].device, list[1].label.as_str()),
+                (1, "floppy.img 360K")
+            );
+
+            let units = s
+                .storage_read(&read(0, Address::Linear(7), 7), 512)
+                .unwrap();
+            let expected: Vec<Unit> = (7..14)
+                .map(|u| Unit::Read {
+                    code: 0,
+                    data: memory.unit(u),
+                })
+                .collect();
+            assert_eq!(units, expected);
+
+            // Cylinder 1, head 1, sector 3 is unit (1 * 2 + 1) * 5 + 2.
+            let chs = Address::Chs {
+                cylinder: 1,
+                head: 1,
+                sector: 3,
+            };
+            let units = s.storage_read(&read(0, chs, 3), 512).unwrap();
+            let at_17: Vec<Unit> = (17..20)
+                .map(|u| Unit::Read {
+                    code: 0,
+                    data: memory.unit(u),
+                })
+                .collect();
+            assert_eq!(units, at_17);
+            let units = s
+                .storage_read(&read(1, Address::Linear(719), 1), 512)
+                .unwrap();
+            assert_eq!(
+                units,
+                [Unit::Read {
+                    code: 0,
+                    data: vec![0xE5; 512]
+                }]
+            );
+        });
+    }
+
+    #[test]
+    fn unit_failures_are_reported_per_unit() {
+        let tmp = tree();
+        let memory = Arc::new(MemoryDisk::new(20, 512, None));
+        memory.fault(
+            3,
+            Fault::Fail {
+                code: 0x10,
+                times: 5,
+            },
+        );
+        memory.fault(4, Fault::Suspect(0x11));
+        connect(tmp.path(), with_disks(vec![memory.clone()]), 4090, |s| {
+            let request = ReadRequest {
+                retries: 2,
+                ..read(0, Address::Linear(2), 3)
+            };
+            let units = s.storage_read(&request, 512).unwrap();
+            assert_eq!(
+                units[0],
+                Unit::Read {
+                    code: 0,
+                    data: memory.unit(2)
+                }
+            );
+            assert_eq!(
+                units[1],
+                Unit::Failed {
+                    class: ErrorClass::MediaError,
+                    code: 0x10
+                }
+            );
+            assert_eq!(
+                units[2],
+                Unit::Read {
+                    code: 0x11,
+                    data: memory.unit(4)
+                }
+            );
+        });
+        // One attempt for unit 2, three for unit 3, one for unit 4.
+        assert_eq!(memory.reads(), [2, 3, 3, 3, 4]);
+    }
+
+    #[test]
+    fn bad_storage_reads_are_refused() {
+        let tmp = tree();
+        let memory = Arc::new(MemoryDisk::new(100, 512, Some(geometry(10, 2, 5))));
+        let linear_only = Arc::new(MemoryDisk::new(10, 512, None));
+        connect(
+            tmp.path(),
+            with_disks(vec![memory, linear_only]),
+            1024,
+            |s| {
+                let refused = |s: &mut Session, request: ReadRequest| {
+                    class(s.storage_read(&request, 512).unwrap_err())
+                };
+                // Two units do not fit a 1024-byte payload.
+                assert_eq!(
+                    refused(s, read(0, Address::Linear(0), 2)),
+                    ErrorClass::InvalidRequest
+                );
+                assert_eq!(
+                    refused(s, read(0, Address::Linear(100), 1)),
+                    ErrorClass::InvalidRequest
+                );
+                assert_eq!(
+                    refused(s, read(2, Address::Linear(0), 1)),
+                    ErrorClass::InvalidRequest
+                );
+                let chs = |sector| Address::Chs {
+                    cylinder: 0,
+                    head: 0,
+                    sector,
+                };
+                assert_eq!(refused(s, read(0, chs(0), 1)), ErrorClass::InvalidRequest);
+                assert_eq!(refused(s, read(1, chs(1), 1)), ErrorClass::InvalidRequest);
+                assert!(s.storage_read(&read(0, chs(5), 1), 512).is_ok());
+            },
+        );
+        connect(
+            tmp.path(),
+            with_disks(vec![Arc::new(MemoryDisk::new(
+                100,
+                512,
+                Some(geometry(10, 2, 5)),
+            ))]),
+            4090,
+            |s| {
+                let chs = Address::Chs {
+                    cylinder: 0,
+                    head: 0,
+                    sector: 4,
+                };
+                // Sectors 4 and 5 fit the track; 4 to 6 do not.
+                assert!(s.storage_read(&read(0, chs, 2), 512).is_ok());
+                assert_eq!(
+                    class(s.storage_read(&read(0, chs, 3), 512).unwrap_err()),
+                    ErrorClass::InvalidRequest
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn no_disks_no_storage() {
+        let tmp = tree();
+        connect(tmp.path(), Options::default(), 1024, |s| {
+            assert!(!s.has_storage());
+            assert_eq!(
+                class(s.storage_list().unwrap_err()),
+                ErrorClass::Unsupported
+            );
+        });
     }
 }
