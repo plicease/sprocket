@@ -144,7 +144,14 @@ pub struct Map {
     version: u32,
     pub source: Source,
     pub mode: Mode,
+    /// When imaging started, in seconds since the Unix epoch.
+    #[serde(default)]
+    pub started: u64,
     pub fingerprint: Vec<Print>,
+    /// Times the operator chose to continue although the source could not
+    /// be verified as the same disk, with the reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confirmations: Vec<String>,
     ranges: Vec<Range>,
 }
 
@@ -175,7 +182,9 @@ impl Map {
             version: VERSION,
             source,
             mode,
+            started: 0,
             fingerprint: Vec::new(),
+            confirmations: Vec::new(),
             ranges: if units == 0 {
                 Vec::new()
             } else {

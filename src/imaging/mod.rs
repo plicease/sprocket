@@ -3,4 +3,5 @@
 //! manifest, and the capture that fills an image from a native client's
 //! disk, resuming where an earlier run stopped.
 
+pub mod manifest;
 pub mod map;
