@@ -28,7 +28,7 @@ use super::map::{self, Counts, Entry, LoadError, Map, Mode, Print, Source, State
 use super::reads::{self, Log};
 use crate::native::link;
 use crate::native::session::{self, ClientInfo, Session};
-use crate::native::storage::{self, Address, Descriptor, DiskKind, ReadRequest, Unit};
+use crate::native::storage::{self, Address, CHS, Descriptor, DiskKind, LINEAR, ReadRequest, Unit};
 use crate::transport::Transport;
 
 /// Units read for the fingerprint: unit 0 and this many more spread across
@@ -47,6 +47,10 @@ pub struct Options {
     /// Recovery passes over failed, suspect and conflicting units, once
     /// every unit has been read.
     pub recover: u32,
+    /// Image by this CHS geometry instead of the device's, which for a
+    /// floppy is probed and can be wrong. It must fit within the drive's
+    /// geometry. A resumed image keeps the geometry it was started with.
+    pub geometry: Option<storage::Geometry>,
     /// Sync the image and save the map at least this often.
     pub sync_every: Duration,
     /// Times in a row to restart the link after a request gets no
@@ -66,6 +70,7 @@ impl Default for Options {
             retries: 3,
             max_units: 0,
             recover: 0,
+            geometry: None,
             sync_every: Duration::from_secs(2),
             reconnects: 3,
             session: session::Options::default(),
@@ -178,6 +183,8 @@ pub enum Error {
     /// The device offers no addressing this host can use, or its units do
     /// not fit a response.
     Unreadable(String),
+    /// The geometry asked for cannot be used with the device.
+    BadGeometry(String),
     /// The device's units differ from the map's, so the map cannot apply.
     SourceChanged(String),
     /// The operator declined to continue.
@@ -209,6 +216,7 @@ impl fmt::Display for Error {
             }
             Error::NoDevice(device) => write!(f, "the server has no device {device}"),
             Error::Unreadable(why) => write!(f, "cannot read the device: {why}"),
+            Error::BadGeometry(why) => write!(f, "cannot image by that geometry: {why}"),
             Error::SourceChanged(why) => write!(
                 f,
                 "the device does not match the progress map ({why}); image it to a new file"
@@ -328,8 +336,81 @@ fn existing_map(paths: &Paths) -> Result<Option<Map>, Error> {
     }
 }
 
-/// The map's record of a device.
-fn source_of(d: &Descriptor, client: &ClientInfo) -> Source {
+fn map_geometry(g: storage::Geometry) -> map::Geometry {
+    map::Geometry {
+        cylinders: g.cylinders,
+        heads: g.heads,
+        sectors: g.sectors,
+        first_sector: g.first_sector,
+    }
+}
+
+fn storage_geometry(g: map::Geometry) -> storage::Geometry {
+    storage::Geometry {
+        cylinders: g.cylinders,
+        heads: g.heads,
+        sectors: g.sectors,
+        first_sector: g.first_sector,
+    }
+}
+
+/// The device as imaged by `geometry`, if one is given: read by CHS with
+/// that geometry, which must fit within the drive's (or, if the client
+/// does not report the drive's, the device's own). A drive whose medium
+/// has no geometry (a floppy whose probe failed) can be read this way
+/// too.
+fn with_geometry(
+    mut device: Descriptor,
+    geometry: Option<storage::Geometry>,
+) -> Result<Descriptor, Error> {
+    let Some(g) = geometry else {
+        return Ok(device);
+    };
+    let drive = device.drive_geometry();
+    let Some(reported) = device.geometry.filter(|_| device.chs()).or(drive) else {
+        return Err(Error::BadGeometry(
+            "the device does not offer CHS addressing".to_string(),
+        ));
+    };
+    if g.cylinders == 0 || g.heads == 0 || g.sectors == 0 {
+        return Err(Error::BadGeometry(
+            "cylinders, heads and sectors must each be at least 1".to_string(),
+        ));
+    }
+    let (limit, whose) = match drive {
+        Some(drive) => (drive, "the drive's"),
+        None => (reported, "the device's"),
+    };
+    if g.cylinders > limit.cylinders || g.heads > limit.heads || g.sectors > limit.sectors {
+        return Err(Error::BadGeometry(format!(
+            "{} is larger than {whose} {}",
+            describe_geometry(Some(map_geometry(g))),
+            describe_geometry(Some(map_geometry(limit)))
+        )));
+    }
+    device.geometry = Some(storage::Geometry {
+        first_sector: reported.first_sector,
+        ..g
+    });
+    device.unit_count = g.units();
+    // Linear units follow the device's geometry, not this one.
+    device.addressing = (device.addressing & !LINEAR) | CHS;
+    Ok(device)
+}
+
+/// The geometry the device itself reported.
+fn reported_geometry(source: &Source) -> Option<map::Geometry> {
+    source.reported_geometry.or(source.geometry)
+}
+
+/// The map's record of a device: `d` as imaged, `reported` as listed, and
+/// whether the operator gave the geometry.
+fn source_of(
+    d: &Descriptor,
+    reported: &Descriptor,
+    overridden: bool,
+    client: &ClientInfo,
+) -> Source {
     Source {
         device: d.device,
         label: d.label.clone(),
@@ -341,12 +422,11 @@ fn source_of(d: &Descriptor, client: &ClientInfo) -> Source {
         },
         unit_size: d.unit_size,
         unit_count: d.unit_count,
-        geometry: d.geometry.map(|g| map::Geometry {
-            cylinders: g.cylinders,
-            heads: g.heads,
-            sectors: g.sectors,
-            first_sector: g.first_sector,
-        }),
+        geometry: d.geometry.map(map_geometry),
+        reported_geometry: overridden
+            .then(|| reported.geometry.map(map_geometry))
+            .flatten(),
+        drive_geometry: reported.drive_geometry().map(map_geometry),
         bios_drive: d.bios_drive(),
         client_platform: client.platform.to_string(),
         client_version: client.version.clone(),
@@ -365,7 +445,10 @@ struct Capture<'o> {
     options: &'o Options,
     map: Map,
     image: File,
+    /// The device as imaged, with the operator's geometry if there is one.
     device: Descriptor,
+    /// The operator's geometry.
+    geometry: Option<storage::Geometry>,
     per_read: usize,
     /// Units read but not yet covered by a sync.
     pending: Vec<(u32, Entry)>,
@@ -392,8 +475,20 @@ impl<'o> Capture<'o> {
         confirm: &mut dyn FnMut(&Question) -> bool,
         events: &mut dyn FnMut(&Event),
     ) -> Result<Self, Error> {
-        let device = find_device(session, options.device)?;
-        let source = source_of(&device, session.client());
+        let reported = find_device(session, options.device)?;
+        // A resumed image keeps the geometry it was started with.
+        let started_with = existing
+            .as_ref()
+            .filter(|map| map.source.reported_geometry.is_some())
+            .and_then(|map| map.source.geometry.map(storage_geometry));
+        let geometry = options.geometry.or(started_with);
+        let device = with_geometry(reported.clone(), geometry)?;
+        let source = source_of(&device, &reported, geometry.is_some(), session.client());
+        if device.unit_count == 0 {
+            return Err(Error::Unreadable(
+                "it reports no units (is there a disk in the drive?)".to_string(),
+            ));
+        }
         let per_read =
             storage::units_per_read(session.max_payload(), usize::from(device.unit_size));
         let per_read = match options.max_units {
@@ -415,6 +510,15 @@ impl<'o> Capture<'o> {
         let capacity = device.capacity();
         let (map, image, resumed) = match existing {
             Some(mut map) => {
+                if map.source.geometry != source.geometry
+                    && (geometry.is_some() || map.source.reported_geometry.is_some())
+                {
+                    return Err(Error::SourceChanged(format!(
+                        "it was imaged by geometry {}, not {}",
+                        describe_geometry(map.source.geometry),
+                        describe_geometry(source.geometry)
+                    )));
+                }
                 if map.source.unit_size != source.unit_size
                     || map.source.unit_count != source.unit_count
                 {
@@ -451,6 +555,7 @@ impl<'o> Capture<'o> {
             map,
             image,
             device,
+            geometry,
             per_read,
             pending: Vec::new(),
             dirty: true,
@@ -484,8 +589,14 @@ impl<'o> Capture<'o> {
         session: &mut Session,
         confirm: &mut dyn FnMut(&Question) -> bool,
     ) -> Result<(), Error> {
-        let device = find_device(session, self.options.device)?;
-        let source = source_of(&device, session.client());
+        let reported = find_device(session, self.options.device)?;
+        let device = with_geometry(reported.clone(), self.geometry)?;
+        let source = source_of(
+            &device,
+            &reported,
+            self.geometry.is_some(),
+            session.client(),
+        );
         if source.unit_size != self.map.source.unit_size
             || source.unit_count != self.map.source.unit_count
         {
@@ -506,11 +617,15 @@ impl<'o> Capture<'o> {
         source: &Source,
         confirm: &mut dyn FnMut(&Question) -> bool,
     ) -> Result<(), Error> {
-        if source.geometry != self.map.source.geometry {
+        let (was, now) = (
+            reported_geometry(&self.map.source),
+            reported_geometry(source),
+        );
+        if was != now {
             self.ask(
                 Question::GeometryChanged {
-                    was: describe_geometry(self.map.source.geometry),
-                    now: describe_geometry(source.geometry),
+                    was: describe_geometry(was),
+                    now: describe_geometry(now),
                 },
                 confirm,
             )?;
@@ -1489,6 +1604,109 @@ mod tests {
             1
         );
         assert_eq!(fs::read(&image).unwrap(), disk.image());
+    }
+
+    fn chs(cylinders: u16, heads: u8, sectors: u8) -> Geometry {
+        Geometry {
+            cylinders,
+            heads,
+            sectors,
+            first_sector: 1,
+        }
+    }
+
+    #[test]
+    fn the_operator_can_give_the_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(40, 512, Some(chs(4, 2, 5))));
+        let opts = Options {
+            geometry: Some(chs(2, 2, 5)),
+            ..options()
+        };
+        let (result, _) = run(&disk, &image, &opts, &mut never);
+        let summary = result.unwrap();
+        assert!(summary.complete);
+        assert_eq!(summary.counts.captured, 20);
+        assert_eq!(fs::read(&image).unwrap(), disk.image()[..20 * 512]);
+        let map = Map::load(&summary.paths.map).unwrap();
+        assert_eq!(map.source.unit_count, 20);
+        assert_eq!(map.source.geometry, Some(map_geometry(chs(2, 2, 5))));
+        assert_eq!(
+            map.source.reported_geometry,
+            Some(map_geometry(chs(4, 2, 5)))
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&summary.paths.manifest).unwrap()).unwrap();
+        assert_eq!(json["source"]["geometry"]["cylinders"], 2);
+        assert_eq!(json["source"]["reported_geometry"]["cylinders"], 4);
+    }
+
+    #[test]
+    fn a_resumed_image_keeps_its_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(40, 512, Some(chs(4, 2, 5))).chs_only());
+        let crashing = Options {
+            geometry: Some(chs(3, 2, 5)),
+            halt_after: Some(3),
+            ..options()
+        };
+        assert!(run(&disk, &image, &crashing, &mut never).0.is_err());
+
+        // A different geometry is refused; none at all resumes with the
+        // one the image was started with.
+        let other = Options {
+            geometry: Some(chs(4, 2, 5)),
+            ..options()
+        };
+        let (result, _) = run(&disk, &image, &other, &mut never);
+        assert!(matches!(result, Err(Error::SourceChanged(_))), "{result:?}");
+        let (result, _) = run(&disk, &image, &options(), &mut never);
+        let summary = result.unwrap();
+        assert!(summary.complete);
+        assert_eq!(summary.counts.captured, 30);
+        assert_eq!(fs::read(&image).unwrap(), disk.image()[..30 * 512]);
+    }
+
+    #[test]
+    fn a_geometry_must_fit_the_drive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let attempt = |disk: MemoryDisk, g: Geometry| {
+            let disk = Arc::new(disk);
+            let opts = Options {
+                geometry: Some(g),
+                ..options()
+            };
+            let (result, _) = run(&disk, &image, &opts, &mut never);
+            assert!(disk.reads().is_empty());
+            assert!(!image.exists());
+            match result {
+                Err(Error::BadGeometry(why)) => why,
+                other => panic!("{other:?}"),
+            }
+        };
+        let probed = || MemoryDisk::new(40, 512, Some(chs(4, 2, 5)));
+        // Without the drive's geometry, the device's is the limit.
+        assert!(attempt(probed(), chs(5, 2, 5)).contains("the device's 4/2/5"));
+        let drive = || probed().with_drive(chs(8, 2, 9));
+        assert!(attempt(drive(), chs(8, 3, 5)).contains("the drive's 8/2/9"));
+        assert!(attempt(drive(), chs(8, 2, 10)).contains("larger"));
+        assert!(attempt(drive(), chs(0, 2, 5)).contains("at least 1"));
+        assert!(attempt(MemoryDisk::new(40, 512, None), chs(4, 2, 5)).contains("CHS"));
+    }
+
+    #[test]
+    fn a_drive_without_a_medium_geometry_takes_one() {
+        let mut d = MemoryDisk::new(0, 512, None)
+            .with_drive(chs(80, 2, 18))
+            .describe();
+        d.addressing = 0;
+        let imaged = with_geometry(d.clone(), Some(chs(80, 2, 9))).unwrap();
+        assert!(imaged.chs() && !imaged.linear());
+        assert_eq!(imaged.unit_count, 1440);
+        assert!(with_geometry(d, Some(chs(81, 2, 9))).is_err());
     }
 
     #[test]

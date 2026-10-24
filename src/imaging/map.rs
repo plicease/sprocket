@@ -105,8 +105,16 @@ pub struct Source {
     pub kind: String,
     pub unit_size: u16,
     pub unit_count: u32,
+    /// The geometry imaged by: the device's, or the operator's when
+    /// `reported_geometry` is present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<Geometry>,
+    /// The geometry the device reported, when the operator gave another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_geometry: Option<Geometry>,
+    /// The drive's largest geometry, if the client reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_geometry: Option<Geometry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bios_drive: Option<u8>,
     pub client_platform: String,
@@ -419,6 +427,8 @@ mod tests {
             unit_size: 512,
             unit_count: units,
             geometry: None,
+            reported_geometry: None,
+            drive_geometry: None,
             bios_drive: Some(0x80),
             client_platform: "DOS on x86".to_string(),
             client_version: "0.3.0".to_string(),

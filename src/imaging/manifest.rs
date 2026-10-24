@@ -234,6 +234,8 @@ mod tests {
             unit_size: 512,
             unit_count: 10,
             geometry: None,
+            reported_geometry: None,
+            drive_geometry: None,
             bios_drive: Some(0x80),
             client_platform: "DOS on x86".to_string(),
             client_version: "0.3.0".to_string(),

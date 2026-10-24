@@ -214,6 +214,11 @@ struct ImageArgs {
     #[arg(long, default_value_t = 0)]
     max_units: usize,
 
+    /// Image by this geometry instead of the device's (a floppy's is
+    /// probed from the inserted disk); it must fit the drive's
+    #[arg(long, value_name = "C/H/S", value_parser = parse_geometry)]
+    geometry: Option<native::storage::Geometry>,
+
     /// Once every unit has been read, reread failed, suspect and
     /// conflicting units in up to N passes
     #[arg(long, default_value_t = 0, value_name = "N")]
@@ -499,10 +504,44 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
                 paths.image.display()
             );
         }
-        let wire = d.capacity() * 10 / u64::from(args.baud.max(1));
+        // A floppy's geometry is probed by the client, and can be wrong.
+        let probed = d.kind == native::storage::DiskKind::Removable && d.chs();
+        let (geometry, note) = match (args.geometry, d.geometry.filter(|_| d.chs())) {
+            (Some(g), _) => (Some(g), ""),
+            (None, Some(g)) if probed => (
+                Some(g),
+                ", as probed from the inserted disk (give --geometry C/H/S for another)",
+            ),
+            (None, g) => (g, ""),
+        };
+        if probed && args.geometry.is_none() && args.yes {
+            let g = d.geometry.expect("probed geometry");
+            anyhow::bail!(
+                "the geometry of {}, {}/{}/{}, was probed from the inserted disk and may be \
+                 wrong; check it, and give it with --geometry C/H/S to image without asking",
+                d.label,
+                g.cylinders,
+                g.heads,
+                g.sectors
+            );
+        }
+        let units = match args.geometry {
+            Some(g) => u64::from(g.units()),
+            None => u64::from(d.unit_count),
+        };
+        let bytes = units * u64::from(d.unit_size);
+        let wire = bytes * 10 / u64::from(args.baud.max(1));
+        let by = geometry.map_or(String::new(), |g| {
+            format!(
+                " by geometry {}/{}/{}{note}",
+                g.cylinders, g.heads, g.sectors
+            )
+        });
         let prompt = format!(
-            "image {} into {} (at least {} on the wire at {} baud)?",
-            describe_disk(d),
+            "image device {} ({}, {}){by} into {} (at least {} on the wire at {} baud)?",
+            d.device,
+            d.label,
+            size(bytes),
             paths.image.display(),
             duration(wire),
             args.baud
@@ -517,6 +556,7 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
         retries: args.retries,
         max_units: args.max_units,
         recover: args.recover,
+        geometry: args.geometry,
         session: session::Options {
             previous_session: Some(listed),
             ..options
@@ -677,7 +717,28 @@ fn describe_disk(d: &native::storage::Descriptor) -> String {
     if let Some(g) = d.geometry.filter(|_| d.chs()) {
         text.push_str(&format!(", CHS {}/{}/{}", g.cylinders, g.heads, g.sectors));
     }
+    if let Some(g) = d.drive_geometry() {
+        text.push_str(&format!(
+            ", drive {}/{}/{}",
+            g.cylinders, g.heads, g.sectors
+        ));
+    }
     text
+}
+
+/// `C/H/S`, as for --geometry.
+fn parse_geometry(text: &str) -> Result<native::storage::Geometry, String> {
+    let parts: Vec<&str> = text.split('/').collect();
+    let [c, h, s] = parts[..] else {
+        return Err("expected cylinders/heads/sectors, such as 80/2/18".to_string());
+    };
+    let number = |what: &str, v: &str| format!("bad {what} {v:?}");
+    Ok(native::storage::Geometry {
+        cylinders: c.parse().map_err(|_| number("cylinders", c))?,
+        heads: h.parse().map_err(|_| number("heads", h))?,
+        sectors: s.parse().map_err(|_| number("sectors", s))?,
+        first_sector: 1,
+    })
 }
 
 /// A byte count for people: KB below a megabyte, MB above.

@@ -70,7 +70,8 @@ status=0
     cd "$work/local"
     # shellcheck disable=SC2086
     "$sprocket" image $link --wait 30 --list &&
-        "$sprocket" image $link --device 0 --output floppy.img --yes </dev/null &&
+        "$sprocket" image $link --device 0 --output floppy.img --geometry 40/1/8 --yes \
+            </dev/null &&
         "$sprocket" image $link --device 1 --output hd.img --yes </dev/null
 ) > "$work/client.txt" 2>&1 || status=$?
 
@@ -84,7 +85,8 @@ check() {
         fail=1
     fi
 }
-check "device 0: BIOS 00 (A:) 160K, removable, 320 units" "the floppy is listed"
+check "device 0: BIOS 00 (A:) 160K, removable, 320 units of 512 bytes (160.0 KB), CHS 40/1/8, drive" \
+    "the floppy is listed with the drive's geometry"
 check "device 1: BIOS 80 fixed 2.9M, fixed, 5984 units" "the hard disk is listed"
 for disk in floppy hd; do
     if cmp -s "$work/$disk.img" "$work/local/$disk.img"; then
