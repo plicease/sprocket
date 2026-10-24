@@ -72,6 +72,8 @@ XMODEM bootstrap keeps priority over everything below. It must stay working and 
 
 **Acceptance:** image a known floppy and a hard disk (subject to BIOS capabilities) with documented completeness and integrity checks. Imaging a hard disk survives interruption: stopping and restarting the host, and separately the client, partway through produces an image byte-for-byte identical to an uninterrupted capture, without rereading units already captured. A PS/2 Model 70 disk of about 80 MB, which takes hours at 38400 baud, is the motivating case.
 
+**Status (2026-10-23):** implemented: `sprocket image` (listing, capture, resume from the map, `--recover` passes with a reread log), `sprocket serve --disk`, and `SPROCKET SERVER /D` with INT 13h CHS reads ([imaging](imaging.md#implementation)). Tested with `cargo test`, including simulated host crashes, lost links, failed, suspect and conflicting units, and a changed disk. Also tested over a PTY pair against both servers, and with `SPROCKET.EXE` imaging BIOS floppy and hard disk images under DOSBox-X. Remaining: real hardware (a floppy and a hard disk on `phaistos`, with an interrupted capture), the payload measurements, and 86Box.
+
 ## Milestone 5 — Broader hardware and protocols
 
 - Add capabilities needed by a real second client (e.g. Apple II).
