@@ -414,8 +414,8 @@ impl Client<'_> {
                 ascii(&name)
             )));
         }
-        let temp = dir.join(format!(".{name}.sprocket"));
-        let mut out = File::create(&temp).map_err(|e| local_failure(&name, &e))?;
+        let (mut out, temp) =
+            tree::create_temp(&dir, &name).map_err(|e| local_failure(&name, &e))?;
         let result = self.fetch(con, file, &name, counter, &mut out);
         let done = result.and_then(|mtime| {
             out.sync_all().map_err(|e| local_failure(&name, &e))?;

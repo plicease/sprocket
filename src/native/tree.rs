@@ -4,7 +4,9 @@
 //! by the requester (`sprocket client`) and the responder (`sprocket serve
 //! --mode native`).
 
+use std::fs::File;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::session::{ErrorClass, Fields};
@@ -254,9 +256,43 @@ impl Crc32 {
     }
 }
 
+/// Create the temporary file that receives `name` in `dir`: a hidden name
+/// that no file has yet, `.NAME.PID-N.sprocket`, made with `create_new`,
+/// so an existing file (another transfer's, or anyone's) is never
+/// truncated or deleted. The caller removes it, and only it, on failure.
+pub fn create_temp(dir: &Path, name: &str) -> io::Result<(File, PathBuf)> {
+    let pid = std::process::id();
+    for n in 0u32..1000 {
+        let path = dir.join(format!(".{name}.{pid}-{n}.sprocket"));
+        match File::options().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free temporary file name",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_files_never_replace_existing_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let taken = tmp
+            .path()
+            .join(format!(".x.txt.{}-0.sprocket", std::process::id()));
+        std::fs::write(&taken, b"keep").unwrap();
+        let (_, first) = create_temp(tmp.path(), "x.txt").unwrap();
+        let (_, second) = create_temp(tmp.path(), "x.txt").unwrap();
+        assert_ne!(first, taken);
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&taken).unwrap(), b"keep");
+    }
 
     #[test]
     fn crc32_check_value() {

@@ -429,13 +429,10 @@ impl<'a> Server<'a> {
             Err(e) => return Err(e.into()),
         };
         let real_dir = self.root.resolve(&dir)?;
-        let temp = real_dir.join(format!(".{name}.sprocket"));
-        let mut found = u8::from(exists);
-        if fs::symlink_metadata(&temp).is_ok() {
-            fs::remove_file(&temp)?;
-            found |= 1 << 2;
-        }
-        let file = File::options().write(true).create_new(true).open(&temp)?;
+        // A name of its own, so nothing already there is touched; found bit
+        // 2 (a leftover deleted) is never set.
+        let (file, temp) = tree::create_temp(&real_dir, &name)?;
+        let found = u8::from(exists);
         self.upload = Some(Upload {
             file,
             temp,
@@ -828,6 +825,9 @@ mod tests {
         data.extend_from_slice(b"abc");
         let mut commit = 3u32.to_le_bytes().to_vec();
         commit.extend_from_slice(&Crc32::of(b"abc").to_le_bytes());
+        // Files that look like temporary ones are not this transfer's.
+        let lookalike = tmp.path().join(".x.txt.sprocket");
+        fs::write(&lookalike, b"keep").unwrap();
         let log = &mut |_: &str| {};
         server.handle(&frame(HELLO, 0, hello), log).unwrap();
         server
@@ -845,5 +845,14 @@ mod tests {
             .unwrap();
         assert_eq!(reply[1], tree::FILE_COMMIT | RESPONSE, "{reply:02x?}");
         assert_eq!(fs::read(tmp.path().join("x.txt")).unwrap(), b"abc");
+        assert_eq!(fs::read(&lookalike).unwrap(), b"keep");
+        let temps = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter(|e| {
+                let name = e.as_ref().unwrap().file_name();
+                name.to_string_lossy().ends_with(".sprocket")
+            })
+            .count();
+        assert_eq!(temps, 1, "only the lookalike is left");
     }
 }
