@@ -53,6 +53,13 @@ pub struct Entry {
     /// Rereads returned different good data.
     #[serde(default, skip_serializing_if = "is_false")]
     pub conflict: bool,
+    /// Rereads of a captured unit that failed. The unit keeps the data
+    /// read before, and `code` stays that data's status.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reread_failures: u32,
+    /// The platform code of the last reread that failed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reread_code: u16,
 }
 
 impl Entry {
@@ -62,11 +69,14 @@ impl Entry {
         retries: 0,
         code: 0,
         conflict: false,
+        reread_failures: 0,
+        reread_code: 0,
     };
 
-    /// Captured, but with a status reported alongside the data.
+    /// Captured, but with a status reported alongside the data, or a
+    /// reread that failed.
     pub fn suspect(&self) -> bool {
-        self.state == State::Captured && self.code != 0
+        self.state == State::Captured && (self.code != 0 || self.reread_failures != 0)
     }
 }
 
@@ -493,7 +503,7 @@ mod tests {
                 attempts: 3,
                 retries: 3,
                 code: 0x10,
-                conflict: false,
+                ..Entry::MISSING
             }
         });
         map.save(&path).unwrap();

@@ -566,6 +566,9 @@ fn image(args: ImageArgs) -> anyhow::Result<()> {
                 "recovery pass {pass}: rereading {units} failed, suspect or conflicting units"
             )),
             capture::Event::Recovered { unit } => line(&format!("unit {unit} was read")),
+            capture::Event::RereadFailed { unit, code } => line(&format!(
+                "unit {unit} could not be read again (code {code:#06x}); keeping the data read before"
+            )),
             capture::Event::Conflict { unit } => line(&format!(
                 "unit {unit} read differently than before; both are kept"
             )),

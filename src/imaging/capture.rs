@@ -14,7 +14,8 @@
 //! that now reads is captured; a suspect one that rereads the same with no
 //! status is no longer suspect; one that rereads differently becomes
 //! conflicting, with every version kept in the reread log
-//! (`NAME.img.reads`).
+//! (`NAME.img.reads`). A captured unit whose reread fails keeps its data,
+//! and the failure is recorded beside it, making it suspect.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -149,6 +150,9 @@ pub enum Event {
     Recovering { pass: u32, units: usize },
     /// A unit that had failed was read.
     Recovered { unit: u32 },
+    /// A reread of a captured unit failed; the image keeps the data read
+    /// before.
+    RereadFailed { unit: u32, code: u16 },
     /// A reread returned different data than an earlier read.
     Conflict { unit: u32 },
     /// A request got no response; the link is being restarted.
@@ -712,8 +716,12 @@ impl<'o> Capture<'o> {
                 events(&Event::UnitFailed { unit, code: *code });
                 after.code = *code;
             }
-            (_, Unit::Failed { .. }) => {
-                // Still captured, with the data read before.
+            (_, Unit::Failed { code, .. }) => {
+                // Still captured, with the data read before and its status;
+                // the failure is recorded beside them.
+                events(&Event::RereadFailed { unit, code: *code });
+                after.reread_failures += 1;
+                after.reread_code = *code;
             }
             (State::Failed, Unit::Read { code, data }) => {
                 events(&Event::Recovered { unit });
@@ -862,6 +870,7 @@ impl<'o> Capture<'o> {
                             retries: self.options.retries,
                             code: *code,
                             conflict: before.conflict,
+                            ..Entry::MISSING
                         },
                     ));
                 }
@@ -875,7 +884,7 @@ impl<'o> Capture<'o> {
                             attempts,
                             retries: self.options.retries,
                             code: *code,
-                            conflict: false,
+                            ..Entry::MISSING
                         },
                     );
                     self.dirty = true;
@@ -1343,6 +1352,54 @@ mod tests {
         assert!(map.get(5).suspect());
         assert_eq!(map.get(5).attempts, 2);
         assert_eq!(fs::read(&image).unwrap(), disk.image());
+    }
+
+    #[test]
+    fn a_failed_reread_is_recorded_beside_the_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("disk.img");
+        let disk = Arc::new(MemoryDisk::new(30, 512, None));
+        disk.fault(8, Fault::Suspect(0x11));
+        let (result, _) = run(&disk, &image, &options(), &mut never);
+        assert!(result.is_ok());
+
+        // The unit now fails: the image keeps what was read, with its
+        // status, and the failure is recorded separately.
+        disk.fault(
+            8,
+            Fault::Fail {
+                code: 0x10,
+                times: 1000,
+            },
+        );
+        let (result, events) = run(&disk, &image, &recovering(1), &mut never);
+        let summary = result.unwrap();
+        assert!(events.contains(&Event::RereadFailed {
+            unit: 8,
+            code: 0x10
+        }));
+        assert!(summary.complete);
+        assert_eq!(fs::read(&image).unwrap(), disk.image());
+        let map = Map::load(&summary.paths.map).unwrap();
+        let e = map.get(8);
+        assert_eq!(e.state, State::Captured);
+        assert_eq!((e.code, e.reread_failures, e.reread_code), (0x11, 1, 0x10));
+        assert_eq!(e.attempts, 2);
+
+        // A clean reread clears the data's status, but the failure stays
+        // on record and the unit stays suspect.
+        disk.clear(8);
+        let (result, _) = run(&disk, &image, &recovering(1), &mut never);
+        let summary = result.unwrap();
+        let map = Map::load(&summary.paths.map).unwrap();
+        let e = map.get(8);
+        assert_eq!((e.code, e.reread_failures, e.reread_code), (0, 1, 0x10));
+        assert!(e.suspect());
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&summary.paths.manifest).unwrap()).unwrap();
+        assert_eq!(json["suspect"][0]["start"], 8);
+        assert_eq!(json["suspect"][0]["reread_failures"], 1);
+        assert_eq!(json["suspect"][0]["reread_code"], 0x10);
     }
 
     #[test]

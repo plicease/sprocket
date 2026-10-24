@@ -70,6 +70,11 @@ pub struct Span {
     pub attempts: u32,
     #[serde(skip_serializing_if = "is_zero")]
     pub code: u16,
+    /// For captured units: rereads that failed, and the last one's code.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reread_failures: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reread_code: u16,
 }
 
 fn is_zero<T: Default + PartialEq>(v: &T) -> bool {
@@ -89,6 +94,8 @@ impl Manifest {
                     end: r.end,
                     attempts: r.entry.attempts,
                     code: r.entry.code,
+                    reread_failures: r.entry.reread_failures,
+                    reread_code: r.entry.reread_code,
                 })
                 .collect()
         };
@@ -266,7 +273,9 @@ mod tests {
                 start: 5,
                 end: 6,
                 attempts: 4,
-                code: 0x10
+                code: 0x10,
+                reread_failures: 0,
+                reread_code: 0,
             }]
         );
         assert_eq!((m.suspect[0].start, m.suspect[0].code), (2, 0x11));
