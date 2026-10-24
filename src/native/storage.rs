@@ -18,6 +18,9 @@ const MODE_CHS: u8 = 2;
 
 /// Descriptor `meta` tag for DOS: the BIOS drive number.
 pub const META_BIOS_DRIVE: u8 = 1;
+/// DOS meta tag: the drive's largest geometry (cylinders u16, heads,
+/// sectors), within which CHS reads are accepted.
+pub const META_DRIVE_GEOMETRY: u8 = 2;
 
 /// Longest `meta` and `label` in a descriptor.
 pub const MAX_META: usize = 64;
@@ -140,6 +143,20 @@ impl Descriptor {
             .iter()
             .find(|(tag, value)| *tag == META_BIOS_DRIVE && value.len() == 1)
             .map(|(_, value)| value[0])
+    }
+
+    /// The drive's largest geometry, for DOS clients, which may exceed the
+    /// medium's (a floppy's is probed).
+    pub fn drive_geometry(&self) -> Option<Geometry> {
+        self.meta
+            .iter()
+            .find(|(tag, value)| *tag == META_DRIVE_GEOMETRY && value.len() == 4)
+            .map(|(_, v)| Geometry {
+                cylinders: u16::from_le_bytes([v[0], v[1]]),
+                heads: v[2],
+                sectors: v[3],
+                first_sector: self.geometry.map_or(1, |g| g.first_sector),
+            })
     }
 
     /// Append the length-prefixed encoding to `out`.
@@ -419,7 +436,10 @@ mod tests {
                 sectors: 9,
                 first_sector: 1,
             }),
-            meta: vec![(META_BIOS_DRIVE, vec![0x00])],
+            meta: vec![
+                (META_BIOS_DRIVE, vec![0x00]),
+                (META_DRIVE_GEOMETRY, vec![80, 0, 2, 15]),
+            ],
             label: "BIOS 00 (A:) 360K".to_string(),
         }
     }
@@ -441,6 +461,16 @@ mod tests {
         assert_eq!(decode_list(&wire).unwrap(), list);
         assert_eq!(list[0].capacity(), 368_640);
         assert_eq!(list[0].bios_drive(), Some(0));
+        assert_eq!(
+            list[0].drive_geometry(),
+            Some(Geometry {
+                cylinders: 80,
+                heads: 2,
+                sectors: 15,
+                first_sector: 1
+            })
+        );
+        assert_eq!(list[1].drive_geometry(), None);
         assert!(list[0].chs() && list[0].linear());
         assert!(!list[1].chs());
         assert_eq!(decode_list(&[0]).unwrap(), []);

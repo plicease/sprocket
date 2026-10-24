@@ -168,6 +168,8 @@ pub(crate) mod memory {
         pub linear: bool,
         /// Added to each unit's stamp, to make a different disk.
         pub seed: u32,
+        /// The drive's geometry, reported in `meta` as a DOS client does.
+        pub drive: Option<Geometry>,
         faults: Mutex<HashMap<u32, Fault>>,
         /// Every unit read, in order, including failed attempts.
         pub reads: Mutex<Vec<u32>>,
@@ -182,6 +184,7 @@ pub(crate) mod memory {
                 geometry,
                 linear: true,
                 seed: 0,
+                drive: None,
                 faults: Mutex::new(HashMap::new()),
                 reads: Mutex::new(Vec::new()),
                 flaky_reads: Mutex::new(0),
@@ -190,6 +193,11 @@ pub(crate) mod memory {
 
         pub fn with_seed(mut self, seed: u32) -> Self {
             self.seed = seed;
+            self
+        }
+
+        pub fn with_drive(mut self, drive: Geometry) -> Self {
+            self.drive = Some(drive);
             self
         }
 
@@ -242,7 +250,15 @@ pub(crate) mod memory {
                 unit_size: self.unit_size,
                 unit_count: self.units,
                 geometry: self.geometry,
-                meta: vec![(super::super::storage::META_BIOS_DRIVE, vec![0x80])],
+                meta: {
+                    use super::super::storage::{META_BIOS_DRIVE, META_DRIVE_GEOMETRY};
+                    let mut meta = vec![(META_BIOS_DRIVE, vec![0x80])];
+                    if let Some(g) = self.drive {
+                        let c = g.cylinders.to_le_bytes();
+                        meta.push((META_DRIVE_GEOMETRY, vec![c[0], c[1], g.heads, g.sectors]));
+                    }
+                    meta
+                },
                 label: "memory".to_string(),
             }
         }
