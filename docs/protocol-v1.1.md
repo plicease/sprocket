@@ -1,6 +1,6 @@
-# Native protocol v1.1 — proposed: file trees and either-way roles
+# Native protocol v1.1 — ratified: file trees and either-way roles
 
-**Status:** Proposed on 2026-10-23 for the file-transfer shell in [sprocket-file-transfer-ui](sprocket-file-transfer-ui.md). It has not been ratified; the first implementations follow it so it can be reviewed against working code. Implemented on 2026-10-23 in both roles on Linux (`sprocket serve`, `sprocket client`) and DOS (`SPROCKET SERVER`, `SPROCKET CLIENT`), and tested between them on Linux and under DOSBox-X.
+**Status:** Ratified on 2026-10-23. Proposed the same day for the file-transfer shell in [sprocket-file-transfer-ui](sprocket-file-transfer-ui.md), and reviewed against its implementations in both roles on Linux (`sprocket serve`, `sprocket client`) and DOS (`SPROCKET SERVER`, `SPROCKET CLIENT`): tested between them on Linux, under DOSBox-X, and on real hardware (a NuXT at 57600 baud; see [testing](testing.md#real-hardware-nuxt-phaistos)). Changes to its wire semantics require explicit versioning under [protocol v1 section 3](protocol-v1.md#3-hello-and-versioning).
 
 This is minor version 1 of [protocol v1](protocol-v1.md). Everything in v1 stays as ratified: framing, CRC, sequencing, retransmission, duplicate handling, `PENDING`, sessions, versioning and the file-write procedure. Every addition here follows v1's [extension rules](protocol-v1.md#extension-rules), so a v1.0 peer still works: it answers the new requests with `UNSUPPORTED`, and never advertises the new capability.
 
