@@ -150,7 +150,8 @@ pub(crate) mod memory {
         Suspect(u16),
         /// Reads, with different data each time.
         Flaky,
-        /// Takes this long to read, as a BIOS call that blocks.
+        /// Takes this long to read once, as a BIOS call that blocks, then
+        /// reads normally.
         Slow(Duration),
     }
 
@@ -161,6 +162,8 @@ pub(crate) mod memory {
         pub units: u32,
         pub unit_size: u16,
         pub geometry: Option<Geometry>,
+        /// Offers linear addressing; without it, only CHS.
+        pub linear: bool,
         /// Added to each unit's stamp, to make a different disk.
         pub seed: u32,
         faults: Mutex<HashMap<u32, Fault>>,
@@ -175,6 +178,7 @@ pub(crate) mod memory {
                 units,
                 unit_size,
                 geometry,
+                linear: true,
                 seed: 0,
                 faults: Mutex::new(HashMap::new()),
                 reads: Mutex::new(Vec::new()),
@@ -187,6 +191,11 @@ pub(crate) mod memory {
             self
         }
 
+        pub fn chs_only(mut self) -> Self {
+            self.linear = false;
+            self
+        }
+
         pub fn fault(&self, unit: u32, fault: Fault) {
             self.faults.lock().unwrap().insert(unit, fault);
         }
@@ -194,6 +203,11 @@ pub(crate) mod memory {
         /// The contents of unit `unit` when it reads cleanly.
         pub fn unit(&self, unit: u32) -> Vec<u8> {
             stamp(unit.wrapping_add(self.seed), usize::from(self.unit_size))
+        }
+
+        /// The whole disk as it reads cleanly.
+        pub fn image(&self) -> Vec<u8> {
+            (0..self.units).flat_map(|u| self.unit(u)).collect()
         }
 
         pub fn reads(&self) -> Vec<u32> {
@@ -216,7 +230,8 @@ pub(crate) mod memory {
             Descriptor {
                 device: 0,
                 kind: DiskKind::Fixed,
-                addressing: LINEAR | if self.geometry.is_some() { CHS } else { 0 },
+                addressing: if self.linear { LINEAR } else { 0 }
+                    | if self.geometry.is_some() { CHS } else { 0 },
                 unit_size: self.unit_size,
                 unit_count: self.units,
                 geometry: self.geometry,
@@ -274,6 +289,7 @@ pub(crate) mod memory {
                     })
                 }
                 Some(Fault::Slow(delay)) => {
+                    faults.remove(&unit);
                     drop(faults);
                     thread::sleep(delay);
                     Ok(clean(0))
