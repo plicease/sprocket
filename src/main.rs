@@ -13,6 +13,12 @@ use sprocket::trace::Trace;
 use sprocket::xmodem::{self, Event, RetryReason};
 use sprocket::{serve, transport, zmodem};
 
+/// The serial port used when --port is not given.
+#[cfg(windows)]
+const DEFAULT_PORT: &str = "COM1";
+#[cfg(not(windows))]
+const DEFAULT_PORT: &str = "/dev/ttyS0";
+
 #[derive(Parser)]
 #[command(version, about = "Serial Protocol Rocket")]
 struct Cli {
@@ -36,12 +42,12 @@ enum Command {
 
 #[derive(Args)]
 struct ClientArgs {
-    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
-    #[arg(long)]
+    /// Serial device, or tcp://HOST:PORT for an emulator link
+    #[arg(long, default_value = DEFAULT_PORT)]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
-    #[arg(long, default_value_t = 9600)]
+    #[arg(long, env = "SPROCKET_BAUD", default_value_t = 9600)]
     baud: u32,
 
     /// Seconds to keep calling the server before giving up
@@ -63,12 +69,12 @@ struct SendArgs {
     #[arg(long, value_enum, default_value_t = Protocol::Xmodem)]
     protocol: Protocol,
 
-    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
-    #[arg(long)]
+    /// Serial device, or tcp://HOST:PORT for an emulator link
+    #[arg(long, default_value = DEFAULT_PORT)]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
-    #[arg(long, default_value_t = 9600)]
+    #[arg(long, env = "SPROCKET_BAUD", default_value_t = 9600)]
     baud: u32,
 
     /// Seconds to wait for the receiver to start the transfer
@@ -91,12 +97,12 @@ struct ServeArgs {
     #[arg(long, value_enum, default_value_t = Mode::Native)]
     mode: Mode,
 
-    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
-    #[arg(long)]
+    /// Serial device, or tcp://HOST:PORT for an emulator link
+    #[arg(long, default_value = DEFAULT_PORT)]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
-    #[arg(long, default_value_t = 9600)]
+    #[arg(long, env = "SPROCKET_BAUD", default_value_t = 9600)]
     baud: u32,
 
     /// Directory to serve; nothing outside it is reachable
@@ -142,12 +148,12 @@ enum Switch {
 
 #[derive(Args)]
 struct HelloArgs {
-    /// Serial device (e.g. /dev/ttyS0), or tcp://HOST:PORT for an emulator link
-    #[arg(long)]
+    /// Serial device, or tcp://HOST:PORT for an emulator link
+    #[arg(long, default_value = DEFAULT_PORT)]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
-    #[arg(long, default_value_t = 9600)]
+    #[arg(long, env = "SPROCKET_BAUD", default_value_t = 9600)]
     baud: u32,
 
     /// Seconds to keep calling the server before giving up

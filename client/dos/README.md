@@ -7,6 +7,8 @@ SPROCKET CLIENT [port [baud]]                 default: COM1 9600
 SPROCKET SERVER [port [baud [dir]]] [/W]      default: COM1 9600
 ```
 
+The baud rate defaults to the `SPROCKET_BAUD` environment variable if it is set (`SET SPROCKET_BAUD=38400`), else 9600. The Linux test build (`make host`) defaults to `/dev/ttyS0` instead of `COM1`.
+
 `SPROCKET` with no subcommand prints its usage.
 
 `SPROCKET CLIENT` calls a server (`sprocket serve` on Linux, or `SPROCKET SERVER` on another DOS machine) and gives the same `/>` prompt, commands, messages and listings as `sprocket client` on Linux: `ls`, `cd`, `get`, `put`, `lls`, `lcd` and the rest (type `help`). `get` copies remote files into the local directory and `put` sends local files to the server; both take `*` and `?` wildcards, refuse to replace a file without `-f`, and stop a batch at the first file that fails. Received files are written as `NAME.$$$` (or `NAME.$$0` and so on, if that name is taken) and renamed into place when complete, with the server's date and time. With `get -f`, the file being replaced is first renamed to a backup name that no file has, and deleted only once the new file is in place; if that fails, it is renamed back. A remote name that is not a valid 8.3 name is refused rather than shortened. Line input is plain: Backspace erases, Esc clears the line, and Ctrl-D (or Ctrl-Z) on an empty line ends the session; `set editing` is recognized and reported as unavailable. Esc or Ctrl-C stops a long listing or a transfer. Commands can also come from a file: `SPROCKET CLIENT COM1 38400 < CMDS.TXT`.

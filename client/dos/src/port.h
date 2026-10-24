@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 
+/* The port used when none is named: COM1 on DOS, /dev/ttyS0 on Linux. */
+extern const char port_default[];
+
 /* Open the named port at baud, 8N1, no flow control. Returns 0 on success,
  * or prints an error and returns -1. */
 int port_open(const char *name, long baud);
