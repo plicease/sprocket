@@ -32,7 +32,7 @@
 #include "storage.h"
 #include "tree.h"
 
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
 /*
  * The largest payload accepted and sent. A STORAGE_READ response carries
  * one 512-byte sector at 1024 and seven at 4090, the protocol's limit;
