@@ -2,10 +2,11 @@
 /*
  * SPROCKET: the native protocol on DOS.
  *
- * SPROCKET SERVER [port [baud [dir]]] [/W] answers the host over a serial
- * port until the host closes the session or the user presses Esc. With a
- * directory it serves that tree (read-only unless /W); without one it
- * answers HELLO, PING and CLOSE only.
+ * SPROCKET SERVER [port [baud [dir]]] [/W] [/1] answers clients over a
+ * serial port, one session after another, until the user presses Esc (or,
+ * with /1, until the first client closes its session). With a directory
+ * it serves that tree (read-only unless /W); without one it answers
+ * HELLO, PING and CLOSE only.
  *
  * SPROCKET CLIENT [port [baud]] calls a server and runs the file-transfer
  * shell (cli.c).
@@ -52,9 +53,10 @@ static void usage(void)
     printf("SPROCKET %s: native file transfer over a serial line.\n\n", VERSION);
     printf("  SPROCKET CLIENT [port [baud]]\n");
     printf("      Call a server on port and copy files to and from it.\n");
-    printf("  SPROCKET SERVER [port [baud [dir]]] [/W]\n");
-    printf("      Answer a client on port. With dir, serve its files; /W also\n");
-    printf("      lets the client write them.\n\n");
+    printf("  SPROCKET SERVER [port [baud [dir]]] [/W] [/1]\n");
+    printf("      Answer clients on port until Esc is pressed. With dir, serve\n");
+    printf("      its files; /W also lets clients write them. /1 exits when\n");
+    printf("      the first client closes its session.\n\n");
     printf("The port defaults to %s, and baud to SPROCKET_BAUD if set, else 9600.\n",
            port_default);
 }
@@ -85,6 +87,7 @@ static int server(int argc, char **argv)
     long baud;
     const char *dir;
     int writable = 0;
+    int once = 0;
     int count = 0;
     int i;
     struct fs_entry root;
@@ -105,6 +108,8 @@ static int server(int argc, char **argv)
     for (i = 0; i < argc; i++) {
         if (is_option(argv[i], "/W")) {
             writable = 1;
+        } else if (is_option(argv[i], "/1")) {
+            once = 1;
         } else if (argv[i][0] == '/' && argv[i][1] != '\0' && argv[i][2] == '\0') {
             usage();
             return 1;
@@ -170,7 +175,18 @@ static int server(int argc, char **argv)
                     }
                     frame_send(out, out_len, send_byte);
                     if (cl.closed) {
-                        break;
+                        if (once) {
+                            break;
+                        }
+                        /*
+                         * Safe to print after a response here: the host
+                         * sends nothing more unless that response was
+                         * lost, and then only after its timeout. A resent
+                         * CLOSE is answered from the cache.
+                         */
+                        cl.closed = 0;
+                        printf("Session %04X closed by the client.\n", cl.session);
+                        printf("Waiting for a client; press Esc to exit.\n");
                     }
                 }
             } else if (result != FRAME_NONE) {

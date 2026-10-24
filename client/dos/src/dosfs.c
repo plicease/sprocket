@@ -14,6 +14,31 @@
 
 #define SKIP (_A_HIDDEN | _A_SYSTEM | _A_VOLID)
 
+/*
+ * What find-first looks for: everything but volume labels. With the
+ * volume label bit set, some DOS versions find only the volume label.
+ */
+#define FIND (_A_SUBDIR | _A_RDONLY | _A_ARCH | _A_HIDDEN | _A_SYSTEM)
+
+static char pattern[FS_PATH_MAX + 5];
+
+/* Set pattern to "*.*" in the directory at path. Returns 0, or -1 if it
+ * is too long. */
+static int set_pattern(const char *path)
+{
+    size_t len = strlen(path);
+
+    if (len + 5 > sizeof pattern) {
+        return -1;
+    }
+    memcpy(pattern, path, len);
+    if (len > 0 && path[len - 1] != '\\' && path[len - 1] != '/' && path[len - 1] != ':') {
+        pattern[len++] = '\\';
+    }
+    strcpy(pattern + len, "*.*");
+    return 0;
+}
+
 static int usable(const struct find_t *f)
 {
     const char *p;
@@ -38,21 +63,14 @@ static void fill(struct fs_entry *e, const struct find_t *f)
 
 int fs_scan(const char *path, uint16_t index, struct fs_entry *e)
 {
-    static char pattern[FS_PATH_MAX + 5];
     struct find_t f;
-    size_t len = strlen(path);
     unsigned rc;
 
-    if (len + 5 > sizeof pattern) {
+    if (set_pattern(path) != 0) {
         errno = ENOENT;
         return FS_ERROR;
     }
-    memcpy(pattern, path, len);
-    if (len > 0 && path[len - 1] != '\\' && path[len - 1] != ':') {
-        pattern[len++] = '\\';
-    }
-    strcpy(pattern + len, "*.*");
-    rc = _dos_findfirst(pattern, _A_SUBDIR | _A_RDONLY | _A_ARCH | SKIP, &f);
+    rc = _dos_findfirst(pattern, FIND, &f);
     while (rc == 0) {
         if (usable(&f)) {
             if (index == 0) {
@@ -79,21 +97,40 @@ int fs_stat(const char *path, struct fs_entry *e)
 {
     struct find_t f;
     size_t len = strlen(path);
+    unsigned rc;
 
     /* The root of a drive has no directory entry of its own. */
-    if ((len == 3 && path[1] == ':' && path[2] == '\\') || (len == 1 && path[0] == '\\')
+    if ((len == 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/'))
+        || (len == 1 && (path[0] == '\\' || path[0] == '/'))
         || (len == 2 && path[1] == ':')) {
         e->dir = 1;
         e->size = 0;
         e->mtime = 0;
         return FS_OK;
     }
-    if (_dos_findfirst(path, _A_SUBDIR | _A_RDONLY | _A_ARCH | SKIP, &f) != 0) {
-        errno = ENOENT;
-        return FS_ERROR;
+    if (_dos_findfirst(path, FIND, &f) == 0) {
+        fill(e, &f);
+        return FS_OK;
     }
-    fill(e, &f);
-    return FS_OK;
+    /*
+     * Find-first does not find "." or ".." in a root directory, or a name
+     * ending in a backslash, but a directory can still be scanned. The
+     * first entry of any other directory is ".", with the directory's own
+     * date; an empty root has none ("file not found").
+     */
+    if (set_pattern(path) == 0) {
+        rc = _dos_findfirst(pattern, FIND, &f);
+        if (rc == 0 || rc == 0x02 || rc == 0x12) {
+            e->dir = 1;
+            e->size = 0;
+            e->mtime = rc == 0 && strcmp(f.name, ".") == 0
+                           ? ((uint32_t)f.wr_date << 16) | f.wr_time
+                           : 0;
+            return FS_OK;
+        }
+    }
+    errno = ENOENT;
+    return FS_ERROR;
 }
 
 int fs_set_mtime(const char *path, uint32_t mtime)
