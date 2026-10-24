@@ -119,6 +119,11 @@ struct ServeArgs {
     #[arg(long)]
     writable: bool,
 
+    /// Offer a raw image file as a disk to `sprocket image` (native mode;
+    /// may be given more than once)
+    #[arg(long, value_name = "FILE")]
+    disk: Vec<PathBuf>,
+
     /// Seconds without input before a session returns to the banner
     /// (terminal mode)
     #[arg(long, default_value_t = 600)]
@@ -267,6 +272,15 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if args.writable && args.mode == Mode::Terminal {
         anyhow::bail!("--writable needs --mode native; terminal mode is always read-only");
     }
+    if !args.disk.is_empty() && args.mode == Mode::Terminal {
+        anyhow::bail!("--disk needs --mode native");
+    }
+    let mut disks: Vec<std::sync::Arc<dyn native::disk::Disk>> = Vec::new();
+    for path in &args.disk {
+        let disk = native::disk::ImageDisk::open(path, None)
+            .with_context(|| format!("cannot offer {}", path.display()))?;
+        disks.push(std::sync::Arc::new(disk));
+    }
     let root =
         Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
     let trace = open_trace(args.trace.as_ref(), "serve")?;
@@ -284,6 +298,7 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     let native = native::server::Options {
         writable: args.writable,
+        disks,
         ..native::server::Options::default()
     };
     let what = match (args.mode, args.writable) {
