@@ -20,7 +20,7 @@ VECTORS := ../../tests/vectors
 SHELL_FIXTURES := ../../tests/shell
 CORE := src/frame.c src/proto.c
 TREE := src/tree.c src/crc32.c
-CLIENT := src/cli.c src/req.c src/shell.c
+CLIENT := src/cli.c src/place.c src/req.c src/shell.c
 HEADERS := $(wildcard src/*.h)
 
 all: build/SPROCKET.EXE
@@ -55,8 +55,8 @@ build/test_frame: test/test_frame.c test/vectors.c src/frame.c $(HEADERS) | buil
 build/test_proto: test/test_proto.c test/vectors.c $(CORE) $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_proto.c test/vectors.c $(CORE)
 
-build/test_tree: test/test_tree.c test/vectors.c $(CORE) $(TREE) src/posixfs.c $(HEADERS) | build
-	$(CC) $(HOST_CFLAGS) -o $@ test/test_tree.c test/vectors.c $(CORE) $(TREE) src/posixfs.c
+build/test_tree: test/test_tree.c test/vectors.c $(CORE) $(TREE) src/place.c src/posixfs.c $(HEADERS) | build
+	$(CC) $(HOST_CFLAGS) -o $@ test/test_tree.c test/vectors.c $(CORE) $(TREE) src/place.c src/posixfs.c
 
 build/test_shell: test/test_shell.c test/vectors.c src/shell.c $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_shell.c test/vectors.c src/shell.c

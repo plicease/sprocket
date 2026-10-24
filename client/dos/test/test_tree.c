@@ -2,7 +2,9 @@
 /*
  * Runs the file tree (src/tree.c, on src/posixfs.c) against the v1.1
  * fixtures in tests/vectors/frames.txt and a scratch directory: lookups,
- * paging, refusals, and writing with its temporary and backup files.
+ * paging, refusals, and writing with its temporary and backup files. Also
+ * the client's placing of received files (src/place.c), with a failing
+ * final rename.
  *
  * Usage: test_tree VECTOR_DIR
  */
@@ -15,6 +17,7 @@
 #include "../src/crc32.h"
 #include "../src/frame.h"
 #include "../src/fsys.h"
+#include "../src/place.h"
 #include "../src/proto.h"
 #include "../src/tree.h"
 #include "vectors.h"
@@ -331,6 +334,45 @@ static void writing(void)
     CHECK(!exists("C.$$$") && !exists("C.TXT"), "reset deletes the temporary file");
 }
 
+/* The client's get: replacing keeps the old file until the new one is in
+ * place, and the names it picks never touch existing files. */
+static void placing(void)
+{
+    char temp[FS_PATH_MAX + 1];
+    char dest[FS_PATH_MAX + 1];
+
+    mkdir(in_dir("get"), 0777);
+    strcpy(dest, in_dir("get/F.TXT"));
+
+    CHECK(place_free_name(temp, dest, "F.TXT", '$') && strcmp(temp, in_dir("get/F.$$$")) == 0,
+          "temporary name NAME.$$$");
+    write_file("get/F.$$$", "someone's", 9, 0);
+    CHECK(place_free_name(temp, dest, "F.TXT", '$') && strcmp(temp, in_dir("get/F.$$0")) == 0,
+          "an existing NAME.$$$ is skipped");
+
+    /* A new file. */
+    write_file("get/F.$$0", "one", 3, 0);
+    CHECK(place_file(in_dir("get/F.$$0"), dest) && file_is("get/F.TXT", "one")
+              && !exists("get/F.$$0"),
+          "placed a new file");
+
+    /* Replacing, with a lookalike backup name already taken. */
+    write_file("get/F.$B$", "not ours", 8, 0);
+    write_file("get/F.$$0", "two", 3, 0);
+    CHECK(place_file(in_dir("get/F.$$0"), dest) && file_is("get/F.TXT", "two"),
+          "replaced the file");
+    CHECK(file_is("get/F.$B$", "not ours") && !exists("get/F.$B0"),
+          "the backup was its own name, and is gone");
+
+    /* The final rename fails (the temporary file has vanished): the old
+     * file must be back in place. */
+    CHECK(!place_file(in_dir("get/F.$$0"), dest), "placing a missing file fails");
+    CHECK(file_is("get/F.TXT", "two") && !exists("get/F.$B0"),
+          "after a failed rename the old file is unchanged");
+    CHECK(file_is("get/F.$$$", "someone's") && file_is("get/F.$B$", "not ours"),
+          "other files untouched");
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) {
@@ -343,6 +385,7 @@ int main(int argc, char **argv)
     lookups();
     listing();
     writing();
+    placing();
     remove_tree();
     printf("test_tree: %d failures\n", failures);
     return failures != 0;

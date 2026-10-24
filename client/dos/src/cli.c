@@ -4,8 +4,8 @@
  * the Linux client, with plain line input. get copies remote files into
  * the local directory and put copies local files to the remote one; both
  * refuse to replace a file without -f, and a batch stops at the first file
- * that fails. Received files are written as NAME.$$$ and renamed into
- * place once complete, with the sender's modification time.
+ * that fails. Received files are written under a temporary name and put
+ * in place once complete (place.c), with the sender's modification time.
  *
  * The client sends one request at a time and prints only between them,
  * so the screen never holds up the serial port.
@@ -23,6 +23,7 @@
 #include "cli.h"
 #include "crc32.h"
 #include "fsys.h"
+#include "place.h"
 #include "port.h"
 #include "proto.h"
 #include "req.h"
@@ -723,22 +724,6 @@ static void batch(const char *verb, const char *pattern, uint16_t mark, unsigned
     }
 }
 
-/* A name for the temporary file: NAME.$$$ beside the destination. */
-static int temp_name(char *out, const char *dir, const char *name)
-{
-    const char *dot = strrchr(name, '.');
-    size_t base = dot ? (size_t)(dot - name) : strlen(name);
-    char alt[FS_NAME_MAX + 5];
-
-    if (base + 4 >= sizeof alt) {
-        return 0;
-    }
-    memcpy(alt, name, base);
-    strcpy(alt + base, ".$$$");
-    strcpy(out, dir);
-    return join(out, alt, strlen(alt));
-}
-
 /* Copy one remote file here. Returns 1, or 0 after saying why not. */
 static int receive(const char *rdir, const char *name, int force, const char *count)
 {
@@ -764,9 +749,13 @@ static int receive(const char *rdir, const char *name, int force, const char *co
         return 0;
     }
     strcpy(dest, lcwd);
-    if (!join(dest, name, strlen(name)) || !temp_name(temp, lcwd, name)
-        || !shell_target(rdir, name, path, sizeof path)) {
+    if (!join(dest, name, strlen(name)) || !shell_target(rdir, name, path, sizeof path)) {
         printf("%s%s: the path is too long\n", count, shown);
+        return 0;
+    }
+    /* NAME.$$$, or another name no file has: nothing there is touched. */
+    if (!place_free_name(temp, dest, name, '$')) {
+        printf("%s%s: no free temporary name (here)\n", count, shown);
         return 0;
     }
     if (!force && fs_stat(dest, &e) == FS_OK) {
@@ -828,12 +817,9 @@ static int receive(const char *rdir, const char *name, int force, const char *co
         printf("\n%s: cannot write it (here)\n", shown);
         ok = 0;
     }
-    if (ok && force && fs_stat(dest, &e) == FS_OK && remove(dest) != 0) {
-        printf("\n%s: cannot replace it (here)\n", shown);
-        ok = 0;
-    }
-    if (ok && rename(temp, dest) != 0) {
-        printf("\n%s: cannot rename %s (here)\n", shown, temp);
+    /* The old file is kept until the new one is in place. */
+    if (ok && !place_file(temp, dest)) {
+        printf("\n%s: cannot put it in place (here); the old file is unchanged\n", shown);
         ok = 0;
     }
     if (!ok) {
