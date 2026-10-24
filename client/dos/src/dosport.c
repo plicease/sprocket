@@ -39,6 +39,8 @@
 static unsigned base;
 static uint16_t errors;
 
+const char port_default[] = "COM1";
+
 int port_open(const char *name, long baud)
 {
     unsigned short __far *bios_ports = (unsigned short __far *)MK_FP(0x40, 0);

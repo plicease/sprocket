@@ -10,6 +10,9 @@
  * SPROCKET CLIENT [port [baud]] calls a server and runs the file-transfer
  * shell (cli.c).
  *
+ * The port defaults to port_default (COM1 on DOS), and the baud rate to
+ * SPROCKET_BAUD from the environment, or 9600 if that is not set.
+ *
  * Screen output happens only before a response is sent, never between
  * sending a response and reading the next request: printing scrolls the
  * screen, which on an 8088 is slow enough to overrun a UART without a
@@ -26,7 +29,7 @@
 #include "proto.h"
 #include "tree.h"
 
-#define VERSION "0.2.0"
+#define VERSION "0.2.2"
 #define MAX_PAYLOAD 1024
 
 /*
@@ -48,11 +51,20 @@ static void usage(void)
 {
     printf("SPROCKET %s: native file transfer over a serial line.\n\n", VERSION);
     printf("  SPROCKET CLIENT [port [baud]]\n");
-    printf("      Call a server on port (default COM1 9600) and copy files to\n");
-    printf("      and from it.\n");
+    printf("      Call a server on port and copy files to and from it.\n");
     printf("  SPROCKET SERVER [port [baud [dir]]] [/W]\n");
     printf("      Answer a client on port. With dir, serve its files; /W also\n");
-    printf("      lets the client write them.\n");
+    printf("      lets the client write them.\n\n");
+    printf("The port defaults to %s, and baud to SPROCKET_BAUD if set, else 9600.\n",
+           port_default);
+}
+
+/* The baud rate when none is given: SPROCKET_BAUD, or 9600. */
+static long default_baud(void)
+{
+    const char *env = getenv("SPROCKET_BAUD");
+
+    return env != NULL && *env != '\0' ? atol(env) : 9600L;
 }
 
 /* arg is option, ignoring ASCII case; option is in upper case. */
@@ -68,7 +80,7 @@ static int is_option(const char *arg, const char *option)
 
 static int server(int argc, char **argv)
 {
-    const char *args[3] = { "COM1", "9600", NULL };
+    const char *args[3] = { NULL, NULL, NULL };
     const char *name;
     long baud;
     const char *dir;
@@ -103,8 +115,8 @@ static int server(int argc, char **argv)
             return 1;
         }
     }
-    name = args[0];
-    baud = atol(args[1]);
+    name = args[0] != NULL ? args[0] : port_default;
+    baud = args[1] != NULL ? atol(args[1]) : default_baud();
     dir = args[2];
     if (writable && dir == NULL) {
         printf("/W needs a directory to serve.\n");
@@ -205,8 +217,8 @@ static int client(int argc, char **argv)
         usage();
         return 1;
     }
-    return cli_run(argc > 0 ? argv[0] : "COM1", argc > 1 ? atol(argv[1]) : 9600L, resp_buf,
-                   rx_buf, MAX_PAYLOAD, 0);
+    return cli_run(argc > 0 ? argv[0] : port_default, argc > 1 ? atol(argv[1]) : default_baud(),
+                   resp_buf, rx_buf, MAX_PAYLOAD, 0);
 }
 
 int main(int argc, char **argv)

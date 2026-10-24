@@ -35,6 +35,8 @@ static speed_t speed(long baud)
     }
 }
 
+const char port_default[] = "/dev/ttyS0";
+
 int port_open(const char *name, long baud)
 {
     struct termios t;
