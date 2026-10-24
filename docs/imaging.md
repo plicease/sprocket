@@ -1,6 +1,6 @@
 # Disk imaging and preservation
 
-**Status:** Draft. Initial imaging is read-only.
+**Status:** Implemented (2026-10-23) as described under [decisions](#decisions) and [implementation](#implementation), and tested on Linux and in DOSBox-X; not yet on real hardware. Imaging is read-only.
 
 ## Goals
 
@@ -61,7 +61,7 @@ It also records the source identity (below), the unit size and count, and the ho
 
 - A unit is marked **captured only after its bytes are durable**: the host writes the data, syncs the image file (`fsync`), and only then records the units in the map.
 - The map is updated by writing a new copy and renaming it over the old one (or by appending checksummed records to a journal), so that a crash leaves either the old map or the new one.
-- On load, a map that is torn, fails its checksum, or does not match the image is treated conservatively: every unit it cannot vouch for is **missing**, and is read again. Over-reading is cheap; trusting a bad map is not.
+- On load, a map that is torn or fails its checksum is **refused**, and the image and map are left untouched. Nothing then says which of the image's units are good, and the image may hold units of failing media that cannot be read again, so rereading into it could destroy them. The operator images to a new file, or moves the old files aside. A valid map that does not match the image (an image shorter than the map says) is treated conservatively: every unit beyond the image's end is **missing**, and is read again.
 - Syncing after every response would be slow; the host may batch, as long as no unit is marked captured before a sync that covers it.
 
 ### Restarting
@@ -103,7 +103,7 @@ Agreed on 2026-10-23 for Milestone 4.
 - **Host command.** `sprocket image --port … --list` shows the server's disks; `sprocket image --port … --device N --output NAME.img` images one. Running the same command again with an existing progress map resumes. It refuses to overwrite an image that has no map, and asks for confirmation before a large read.
 - **Files.** `NAME.img` is the raw image. `NAME.img.json` is the manifest (JSON): source, geometry, host and client versions, counts of captured, missing, failed, suspect and conflicting units, and the image's SHA-256. `NAME.img.map` is the progress map: a list of unit ranges with their state, attempts and platform codes, replaced by writing a new copy and renaming it, and protected by a checksum.
 - **Disks are opt-in on DOS.** `SPROCKET SERVER` offers disks only when started with a switch (`/D`), as `/W` gates writes, and only then advertises `STORAGE_LIST` and the `STORAGE_READ` capabilities. Imaging is read-only, but a raw disk includes deleted files and free space.
-- **Geometry.** INT 13h function 08h for drive parameters, with hard disks counted from the BIOS data area and floppies from the equipment word. For a floppy, function 08h gives the drive's geometry, not the disk's, so the client probes the inserted media. A BIOS without function 08h (the original 1981 PC/XT BIOS) is not supported at first.
+- **Geometry.** INT 13h function 08h for drive parameters, with hard disks counted from the BIOS data area and floppies from the equipment word. For a floppy, function 08h gives the drive's geometry, not the disk's, so the client probes the inserted media. A probe can be wrong (a bad sector on track 0, or an unusual format), so descriptors also carry the drive's geometry (meta tag 2), the client accepts CHS reads anywhere within it, and the host shows a probed geometry for confirmation before imaging. The prompt also takes a format name or C/H/S as its answer. `--format` (`360`, `720`, `1200`, `1440`: the conventional IBM PC formats, not a promise about the medium) or `--geometry C/H/S` gives one instead and skips that question; either is checked against the drive's geometry, and they cannot be combined. Without either, `--yes` refuses a removable disk rather than image by a guess. The map and manifest record the geometry imaged by, and, when the operator gave it, the geometry the device reported; a resumed image keeps its geometry. A BIOS without function 08h (the original 1981 PC/XT BIOS) is not supported at first.
 - **Large disks.** CHS only at first, with capacity reported as the BIOS gives it. The EDD extensions (functions 41h/42h) become the linear-addressing path when a disk needs them.
 - **Retries and fill.** By default the host asks for 3 client-side retries per unit, with a disk reset between attempts. Unreadable units are zero-filled in the image and always recorded as failed in the map and manifest, never only in the image.
 - **DMA boundary.** INT 13h fails (status 09h) when a read buffer crosses a 64 KB physical boundary, which depends on where DOS loads the program. The client detects this and reads through a bounce buffer.
@@ -111,11 +111,18 @@ Agreed on 2026-10-23 for Milestone 4.
 - **Payload size: to be measured.** The DOS program accepts 1024-byte payloads, so a `STORAGE_READ` response carries one 512-byte unit (two would need 1031 bytes). The protocol allows 4090, enough for seven. The buffer size becomes a build constant, both sizes are timed on real hardware, and the result decides the default.
 - **Allocated-only imaging ([#13](https://github.com/plicease/sprocket/issues/13)) is out of scope for Milestone 4,** but nothing here may rule it out. It needs no protocol change, since the host chooses which units to read. So: the host plans every read; the image is written at unit offsets into a file of full logical size, never appended, so skipped ranges can be sparse holes; the map can record ranges deliberately not read (as distinct from missing or failed); and the manifest records the imaging mode (`raw` for now).
 
+## Implementation
+
+- **Host.** `src/imaging/`: `capture.rs` runs a capture; `map.rs` is the progress map; `manifest.rs` the manifest; `reads.rs` the reread log. `sprocket serve --disk FILE` offers an image file as a disk, which is how the host side is tested end to end.
+- **Progress map** (`NAME.img.map`). JSON: the source's descriptor and client, the imaging mode, the start time, the fingerprint (unit numbers and SHA-256s), operator confirmations, and runs of units with the same state (`missing`, `captured`, `failed`, `skipped`), attempts, `retries`, platform code, conflict flag, and for a captured unit the count and last code of rereads that failed. A final `crc32 XXXXXXXX` line protects it. It is replaced by writing a temporary file and renaming it. A unit is marked captured only after the image is synced past it.
+- **Manifest** (`NAME.img.json`). `format` (`sprocket-image`) and `version` (1), the image's name, length and SHA-256, `status` (`complete` or `incomplete`), `mode` (`raw`), `fill` (`zero`), the source, host version, start and finish times, counts, and lists of failed, suspect, conflicting and missing unit ranges (with attempts, codes, and failed rereads), plus the fingerprint, the confirmations, and `reads`, which names the reread log if there is one. It is rewritten from the map at the end of every run.
+- **Recovery passes** (`--recover N`). These run after every unit has been read. Each pass rereads the failed, suspect and conflicting units one at a time. A failed unit that reads is captured. A suspect unit that rereads the same data with no status loses that status; with a status, it stays suspect. A captured unit whose reread fails keeps its data and that data's status, and the failure is recorded beside them (a count of failed rereads and the last one's code), which makes the unit suspect for good. When a reread differs from the data in the image, the earlier version and the new one go in the reread log (`NAME.img.reads`), and the unit becomes conflicting for good. Every later reread of it is logged, and the image holds the first version, or the majority once there are three or more reads. The log is JSON lines, each holding a unit, its SHA-256, time (absent for the first version, whose time was not recorded), attempt, `retries`, status and data in hex. Each line is synced before the map changes.
+- **DOS.** `client/dos/src/storage.c` answers the requests; `biosdisk.c` does the INT 13h work. Only CHS is offered (`STORAGE_READ` by linear unit gets `UNSUPPORTED`). The floppy probe reads the last sector of the first track for 36, 18, 15, 9 and 8 sectors; for 8 or 9 in a 1.2M drive, it reads cylinder 79 to tell 80 tracks from 40.
+
 ## Open questions
 
-- The exact manifest schema, settled with the first implementation.
 - The default payload size, after the measurements above.
-- First fixtures: a generated 360K floppy and a small hard disk with each unit's number stamped into it, attached as BIOS disks with DOSBox-X's `imgmount`, then under 86Box.
+- 86Box fixtures, for a more representative BIOS and controller than DOSBox-X's.
 
 ## Emulator-based image validation
 

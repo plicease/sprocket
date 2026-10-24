@@ -8,6 +8,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use sprocket::files::Root;
+use sprocket::imaging::capture::{self, Paths};
 use sprocket::native::{self, session};
 use sprocket::trace::Trace;
 use sprocket::xmodem::{self, Event, RetryReason};
@@ -38,6 +39,10 @@ enum Command {
     Client(ClientArgs),
     /// Connect to a SPROCKET server, show what it supports, and ping it
     Hello(HelloArgs),
+    /// Image a disk from a SPROCKET server (`SPROCKET SERVER /D` on DOS)
+    /// into a raw image, with a progress map and a manifest; run again to
+    /// resume
+    Image(ImageArgs),
 }
 
 #[derive(Args)]
@@ -114,6 +119,11 @@ struct ServeArgs {
     #[arg(long)]
     writable: bool,
 
+    /// Offer a raw image file as a disk to `sprocket image` (native mode;
+    /// may be given more than once)
+    #[arg(long, value_name = "FILE")]
+    disk: Vec<PathBuf>,
+
     /// Seconds without input before a session returns to the banner
     /// (terminal mode)
     #[arg(long, default_value_t = 600)]
@@ -169,6 +179,67 @@ struct HelloArgs {
     trace: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct ImageArgs {
+    /// Serial device, or tcp://HOST:PORT for an emulator link
+    #[arg(long, default_value = DEFAULT_PORT)]
+    port: String,
+
+    /// Baud rate (serial devices only); the line is always 8N1, no flow control
+    #[arg(long, env = "SPROCKET_BAUD", default_value_t = 9600)]
+    baud: u32,
+
+    /// Seconds to keep calling the server before giving up
+    #[arg(long, default_value_t = 60)]
+    wait: u64,
+
+    /// List the server's disks and exit
+    #[arg(long, conflicts_with_all = ["device", "output"])]
+    list: bool,
+
+    /// Device number to image, from --list
+    #[arg(long, required_unless_present = "list")]
+    device: Option<u8>,
+
+    /// Image file to write: NAME.img, with NAME.img.map and NAME.img.json
+    /// beside it. If its map exists, imaging resumes
+    #[arg(long, required_unless_present = "list", value_name = "NAME.img")]
+    output: Option<PathBuf>,
+
+    /// Retries per unit on the server, after a failed read
+    #[arg(long, default_value_t = 3)]
+    retries: u8,
+
+    /// Most units per request; 0 for as many as fit the payload
+    #[arg(long, default_value_t = 0)]
+    max_units: usize,
+
+    /// Image by this geometry instead of the device's (a floppy's is
+    /// probed from the inserted disk); it must fit the drive's
+    #[arg(long, value_name = "C/H/S", value_parser = parse_geometry)]
+    geometry: Option<native::storage::Geometry>,
+
+    /// Image by a conventional PC floppy format's geometry: 360 (40/2/9),
+    /// 720 (80/2/9), 1200 (80/2/15) or 1440 (80/2/18); also 360k, 720k,
+    /// 1.2m and 1.44m. The disk need not really be in that format
+    #[arg(long, value_name = "FORMAT", value_parser = parse_format, conflicts_with = "geometry")]
+    format: Option<native::storage::Geometry>,
+
+    /// Once every unit has been read, reread failed, suspect and
+    /// conflicting units in up to N passes
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    recover: u32,
+
+    /// Do not ask: start without confirming, and continue with a disk
+    /// that cannot be verified as the one imaged before
+    #[arg(long)]
+    yes: bool,
+
+    /// Append a timestamped byte-level trace of the link to FILE
+    #[arg(long, value_name = "FILE")]
+    trace: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Protocol {
     Zmodem,
@@ -183,6 +254,7 @@ fn main() -> anyhow::Result<()> {
         Command::Serve(args) => serve(args),
         Command::Client(args) => client(args),
         Command::Hello(args) => hello(args),
+        Command::Image(args) => image(args),
     }
 }
 
@@ -216,6 +288,15 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if args.writable && args.mode == Mode::Terminal {
         anyhow::bail!("--writable needs --mode native; terminal mode is always read-only");
     }
+    if !args.disk.is_empty() && args.mode == Mode::Terminal {
+        anyhow::bail!("--disk needs --mode native");
+    }
+    let mut disks: Vec<std::sync::Arc<dyn native::disk::Disk>> = Vec::new();
+    for path in &args.disk {
+        let disk = native::disk::ImageDisk::open(path, None)
+            .with_context(|| format!("cannot offer {}", path.display()))?;
+        disks.push(std::sync::Arc::new(disk));
+    }
     let root =
         Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
     let trace = open_trace(args.trace.as_ref(), "serve")?;
@@ -233,6 +314,7 @@ fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     let native = native::server::Options {
         writable: args.writable,
+        disks,
         ..native::server::Options::default()
     };
     let what = match (args.mode, args.writable) {
@@ -393,6 +475,384 @@ fn hello_session(
     Ok(())
 }
 
+fn image(args: ImageArgs) -> anyhow::Result<()> {
+    let trace = open_trace(args.trace.as_ref(), "image")?;
+    let mut link = open_link(&args.port, args.baud, trace.as_ref())
+        .with_context(|| format!("cannot open {}", args.port))?;
+    let options = session::Options {
+        baud: args.baud,
+        wait: Duration::from_secs(args.wait),
+        ..session::Options::default()
+    };
+    eprintln!(
+        "calling the server on {}; waiting up to {}s",
+        args.port, args.wait
+    );
+    let (devices, listed) = list_disks(link.as_mut(), &options)?;
+    let (Some(device), Some(output)) = (args.device, args.output.as_ref()) else {
+        if devices.is_empty() {
+            println!("the server offers no disks");
+        }
+        for d in &devices {
+            println!("{}", describe_disk(d));
+        }
+        return Ok(());
+    };
+    let d = devices
+        .iter()
+        .find(|d| d.device == device)
+        .with_context(|| format!("the server has no device {device}; see --list"))?;
+    let paths = Paths::new(output);
+    let mut geometry = args.geometry.or(args.format);
+    if !paths.map.exists() {
+        if paths.image.exists() {
+            anyhow::bail!(
+                "{} exists and has no progress map; refusing to overwrite it",
+                paths.image.display()
+            );
+        }
+        // A floppy's geometry is probed by the client, and can be wrong:
+        // unless the operator gave one, propose it and let them choose.
+        let probed = d.kind == native::storage::DiskKind::Removable && d.chs();
+        let given = args.geometry.or(args.format);
+        if probed && given.is_none() && args.yes {
+            let g = d.geometry.expect("probed geometry");
+            anyhow::bail!(
+                "the geometry of {}, {}/{}/{}, was probed from the inserted disk and may be \
+                 wrong; check it, and give it with --format or --geometry to image without asking",
+                d.label,
+                g.cylinders,
+                g.heads,
+                g.sectors
+            );
+        }
+        let mut chosen = given;
+        loop {
+            let geometry = chosen.or(d.geometry.filter(|_| d.chs()));
+            let units = chosen.map_or(u64::from(d.unit_count), |g| u64::from(g.units()));
+            let bytes = units * u64::from(d.unit_size);
+            let wire = bytes * 10 / u64::from(args.baud.max(1));
+            let by = geometry.map_or(String::new(), |g| {
+                format!(
+                    " by geometry {}/{}/{}{}",
+                    g.cylinders,
+                    g.heads,
+                    g.sectors,
+                    if probed && chosen.is_none() {
+                        " (probed from the inserted disk)"
+                    } else {
+                        ""
+                    }
+                )
+            });
+            let prompt = format!(
+                "image device {} ({}, {}){by} into {} (at least {} on the wire at {} baud)?",
+                d.device,
+                d.label,
+                size(bytes),
+                paths.image.display(),
+                duration(wire),
+                args.baud
+            );
+            if args.yes {
+                break;
+            }
+            if !probed || chosen.is_some() {
+                if !ask(&prompt) {
+                    anyhow::bail!("not started");
+                }
+                break;
+            }
+            match ask_geometry(&prompt) {
+                Some(Choice::Yes) => break,
+                Some(Choice::Geometry(g)) => chosen = Some(g),
+                None => anyhow::bail!("not started"),
+            }
+        }
+        geometry = chosen;
+    }
+
+    let capture_options = capture::Options {
+        device,
+        retries: args.retries,
+        max_units: args.max_units,
+        recover: args.recover,
+        geometry,
+        session: session::Options {
+            previous_session: Some(listed),
+            ..options
+        },
+        ..capture::Options::default()
+    };
+    let yes = args.yes;
+    let mut confirm = |q: &capture::Question| {
+        if yes {
+            eprintln!("warning: {q}; continuing (--yes)");
+            return true;
+        }
+        ask(&format!("{q}. Continue?"))
+    };
+    let tty = io::stderr().is_terminal();
+    let mut shown = std::time::Instant::now();
+    let mut mid_line = false;
+    let mut events = |e: &capture::Event| {
+        let mut line = |text: &str| {
+            if mid_line {
+                eprintln!();
+                mid_line = false;
+            }
+            eprintln!("{text}");
+            if let Some(trace) = &trace {
+                trace.note(text);
+            }
+        };
+        match e {
+            capture::Event::Started {
+                source,
+                resumed,
+                counts,
+                units_per_read,
+            } => line(&format!(
+                "{} {}: {} of {} units captured, up to {units_per_read} per request",
+                if *resumed { "resuming" } else { "imaging" },
+                source.label,
+                counts.captured,
+                source.unit_count
+            )),
+            capture::Event::UnitFailed { unit, code } => {
+                line(&format!("unit {unit} could not be read (code {code:#06x})"))
+            }
+            capture::Event::LinkLost(why) => line(&format!("{why}; restarting the link")),
+            capture::Event::Recovering { pass, units } => line(&format!(
+                "recovery pass {pass}: rereading {units} failed, suspect or conflicting units"
+            )),
+            capture::Event::Recovered { unit } => line(&format!("unit {unit} was read")),
+            capture::Event::RereadFailed { unit, code } => line(&format!(
+                "unit {unit} could not be read again (code {code:#06x}); keeping the data read before"
+            )),
+            capture::Event::Conflict { unit } => line(&format!(
+                "unit {unit} read differently than before; both are kept"
+            )),
+            capture::Event::Progress { counts } if tty => {
+                if shown.elapsed() >= Duration::from_millis(250) {
+                    let total = counts.captured + counts.missing + counts.failed + counts.skipped;
+                    let done = total - counts.missing;
+                    eprint!(
+                        "\r{done}/{total} units ({}%), {} failed",
+                        (done * 100).checked_div(total).unwrap_or(100),
+                        counts.failed
+                    );
+                    let _ = io::stderr().flush();
+                    mid_line = true;
+                    shown = std::time::Instant::now();
+                }
+            }
+            capture::Event::Progress { .. } => {}
+        }
+    };
+    let result = capture::capture(
+        link.as_mut(),
+        output,
+        &capture_options,
+        &mut confirm,
+        &mut events,
+    );
+    if mid_line {
+        eprintln!();
+    }
+    let summary = match result {
+        Ok(summary) => summary,
+        Err(e) => {
+            if let Some(trace) = &trace {
+                trace.note(&format!("{e}"));
+            }
+            return Err(e.into());
+        }
+    };
+    let c = summary.counts;
+    if summary.complete {
+        println!("image complete: {} units captured", c.captured);
+    } else {
+        println!(
+            "image incomplete: {} units captured, {} failed, {} missing",
+            c.captured, c.failed, c.missing
+        );
+    }
+    if c.suspect > 0 {
+        println!(
+            "{} units were read with a warning from the server (suspect)",
+            c.suspect
+        );
+    }
+    if c.conflicting > 0 {
+        println!(
+            "{} units read differently on different reads (conflicting; see {})",
+            c.conflicting,
+            summary.paths.reads.display()
+        );
+    }
+    println!(
+        "wrote {}, {} and {}",
+        summary.paths.image.display(),
+        summary.paths.map.display(),
+        summary.paths.manifest.display()
+    );
+    Ok(())
+}
+
+/// The server's disks, from a session of its own, and that session's ID.
+fn list_disks(
+    link: &mut dyn transport::Transport,
+    options: &session::Options,
+) -> anyhow::Result<(Vec<native::storage::Descriptor>, u16)> {
+    let mut session =
+        session::Session::connect(link, options, |_| {}).context("cannot start a session")?;
+    if !session.has_storage() {
+        anyhow::bail!("the server offers no disks (on DOS, start it with SPROCKET SERVER /D)");
+    }
+    let devices = session.storage_list().context("cannot list disks")?;
+    let id = session.session_id();
+    session.close().context("CLOSE failed")?;
+    Ok((devices, id))
+}
+
+fn describe_disk(d: &native::storage::Descriptor) -> String {
+    use native::storage::DiskKind;
+    let kind = match d.kind {
+        DiskKind::Removable => "removable",
+        DiskKind::Fixed => "fixed",
+        _ => "unknown kind",
+    };
+    let mut text = format!(
+        "device {}: {}, {kind}, {} units of {} bytes ({})",
+        d.device,
+        if d.label.is_empty() {
+            "(no label)"
+        } else {
+            &d.label
+        },
+        d.unit_count,
+        d.unit_size,
+        size(d.capacity())
+    );
+    if let Some(g) = d.geometry.filter(|_| d.chs()) {
+        text.push_str(&format!(", CHS {}/{}/{}", g.cylinders, g.heads, g.sectors));
+    }
+    if let Some(g) = d.drive_geometry() {
+        text.push_str(&format!(
+            ", drive {}/{}/{}",
+            g.cylinders, g.heads, g.sectors
+        ));
+    }
+    text
+}
+
+/// The conventional IBM PC floppy formats, for --format: names and
+/// geometry.
+const FLOPPY_FORMATS: [(&[&str], u16, u8, u8); 4] = [
+    (&["360", "360k", "360kb", "360kib"], 40, 2, 9),
+    (&["720", "720k", "720kb", "720kib"], 80, 2, 9),
+    (&["1200", "1.2m", "1.2mb", "1.2mib", "1200k"], 80, 2, 15),
+    (&["1440", "1.44m", "1.44mb", "1.44mib", "1440k"], 80, 2, 18),
+];
+
+/// A floppy format's name, as for --format.
+fn parse_format(text: &str) -> Result<native::storage::Geometry, String> {
+    let name = text.trim().to_ascii_lowercase();
+    FLOPPY_FORMATS
+        .iter()
+        .find(|f| f.0.contains(&name.as_str()))
+        .map(
+            |&(_, cylinders, heads, sectors)| native::storage::Geometry {
+                cylinders,
+                heads,
+                sectors,
+                first_sector: 1,
+            },
+        )
+        .ok_or_else(|| format!("unknown format {text:?}; expected 360, 720, 1200 or 1440"))
+}
+
+/// An answer to the geometry prompt.
+enum Choice {
+    Yes,
+    Geometry(native::storage::Geometry),
+}
+
+/// Ask whether to image by a proposed geometry, taking a format name or
+/// C/H/S instead of yes; `None` for no.
+fn ask_geometry(prompt: &str) -> Option<Choice> {
+    let options = "[y/N, or 360, 720, 1.2m, 1.44m or C/H/S for another geometry]";
+    if !io::stdin().is_terminal() {
+        eprintln!("{prompt} {options} no (not a terminal; use --yes)");
+        return None;
+    }
+    loop {
+        eprint!("{prompt} {options} ");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).unwrap_or(0) == 0 {
+            return None;
+        }
+        let answer = answer.trim();
+        match answer.to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Some(Choice::Yes),
+            "" | "n" | "no" => return None,
+            _ => {}
+        }
+        match parse_format(answer).or_else(|_| parse_geometry(answer)) {
+            Ok(g) => return Some(Choice::Geometry(g)),
+            Err(_) => eprintln!("not understood: {answer:?}"),
+        }
+    }
+}
+
+/// `C/H/S`, as for --geometry.
+fn parse_geometry(text: &str) -> Result<native::storage::Geometry, String> {
+    let parts: Vec<&str> = text.split('/').collect();
+    let [c, h, s] = parts[..] else {
+        return Err("expected cylinders/heads/sectors, such as 80/2/18".to_string());
+    };
+    let number = |what: &str, v: &str| format!("bad {what} {v:?}");
+    Ok(native::storage::Geometry {
+        cylinders: c.parse().map_err(|_| number("cylinders", c))?,
+        heads: h.parse().map_err(|_| number("heads", h))?,
+        sectors: s.parse().map_err(|_| number("sectors", s))?,
+        first_sector: 1,
+    })
+}
+
+/// A byte count for people: KB below a megabyte, MB above.
+fn size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// Seconds as hours and minutes.
+fn duration(secs: u64) -> String {
+    match (secs / 3600, secs % 3600 / 60) {
+        (0, 0) => format!("{secs}s"),
+        (0, m) => format!("{m}m"),
+        (h, m) => format!("{h}h {m:02}m"),
+    }
+}
+
+/// Ask a yes/no question on the terminal; no when there is no terminal.
+fn ask(prompt: &str) -> bool {
+    if !io::stdin().is_terminal() {
+        eprintln!("{prompt} [y/N] no (not a terminal; use --yes)");
+        return false;
+    }
+    eprint!("{prompt} [y/N] ");
+    let _ = io::stderr().flush();
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).is_ok()
+        && matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
+}
+
 fn send(args: SendArgs) -> anyhow::Result<()> {
     let data =
         fs::read(&args.file).with_context(|| format!("cannot read {}", args.file.display()))?;
@@ -547,4 +1007,51 @@ fn send_zmodem(
     let summary = summary.context("ZMODEM transfer failed")?;
     eprintln!("transfer complete: {} bytes", summary.bytes);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chs(g: native::storage::Geometry) -> (u16, u8, u8) {
+        (g.cylinders, g.heads, g.sectors)
+    }
+
+    #[test]
+    fn floppy_formats_by_name() {
+        for (names, geometry) in [
+            (["360", "360k", "360K"], (40, 2, 9)),
+            (["720", "720k", "720KB"], (80, 2, 9)),
+            (["1200", "1.2m", "1.2M"], (80, 2, 15)),
+            (["1440", "1.44m", "1.44MiB"], (80, 2, 18)),
+        ] {
+            for name in names {
+                assert_eq!(chs(parse_format(name).unwrap()), geometry, "{name}");
+            }
+        }
+        assert!(parse_format("2.88m").is_err());
+    }
+
+    #[test]
+    fn geometries_as_c_h_s() {
+        assert_eq!(chs(parse_geometry("80/2/18").unwrap()), (80, 2, 18));
+        assert!(parse_geometry("80/2").is_err());
+        assert!(parse_geometry("80/2/x").is_err());
+        assert!(parse_geometry("80/256/9").is_err());
+    }
+
+    #[test]
+    fn format_and_geometry_conflict() {
+        use clap::Parser;
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                ["sprocket", "image", "--device", "0", "--output", "a.img"]
+                    .iter()
+                    .chain(args),
+            )
+        };
+        assert!(parse(&["--format", "720"]).is_ok());
+        assert!(parse(&["--format", "720", "--geometry", "80/2/9"]).is_err());
+        assert!(parse(&["--format", "880"]).is_err());
+    }
 }

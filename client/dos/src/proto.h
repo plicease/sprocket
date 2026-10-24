@@ -20,6 +20,7 @@
 #define ERR_UNSUPPORTED 1
 #define ERR_INVALID_REQUEST 2
 #define ERR_PROTOCOL_MISMATCH 3
+#define ERR_MEDIA_ERROR 4
 #define ERR_FILE_ERROR 5
 #define ERR_VERIFY_FAILED 6
 /* Minor version 1 (docs/protocol-v1.1.md section 5). */

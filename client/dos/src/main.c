@@ -2,11 +2,12 @@
 /*
  * SPROCKET: the native protocol on DOS.
  *
- * SPROCKET SERVER [port [baud [dir]]] [/W] [/1] answers clients over a
- * serial port, one session after another, until the user presses Esc (or,
- * with /1, until the first client closes its session). With a directory
- * it serves that tree (read-only unless /W); without one it answers
- * HELLO, PING and CLOSE only.
+ * SPROCKET SERVER [port [baud [dir]]] [/W] [/D] [/1] answers clients over
+ * a serial port, one session after another, until the user presses Esc
+ * (or, with /1, until the first client closes its session). With a
+ * directory it serves that tree (read-only unless /W); with /D it offers
+ * the BIOS disks for imaging (storage.c); with neither it answers HELLO,
+ * PING and CLOSE only.
  *
  * SPROCKET CLIENT [port [baud]] calls a server and runs the file-transfer
  * shell (cli.c).
@@ -28,10 +29,18 @@
 #include "port.h"
 #include "fsys.h"
 #include "proto.h"
+#include "storage.h"
 #include "tree.h"
 
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
+/*
+ * The largest payload accepted and sent. A STORAGE_READ response carries
+ * one 512-byte sector at 1024 and seven at 4090, the protocol's limit;
+ * build with `make MAX_PAYLOAD=4090` to try it.
+ */
+#ifndef MAX_PAYLOAD
 #define MAX_PAYLOAD 1024
+#endif
 
 /*
  * Check the keyboard and timers once per this many idle polls. Nothing
@@ -53,10 +62,11 @@ static void usage(void)
     printf("SPROCKET %s: native file transfer over a serial line.\n\n", VERSION);
     printf("  SPROCKET CLIENT [port [baud]]\n");
     printf("      Call a server on port and copy files to and from it.\n");
-    printf("  SPROCKET SERVER [port [baud [dir]]] [/W] [/1]\n");
+    printf("  SPROCKET SERVER [port [baud [dir]]] [/W] [/D] [/1]\n");
     printf("      Answer clients on port until Esc is pressed. With dir, serve\n");
-    printf("      its files; /W also lets clients write them. /1 exits when\n");
-    printf("      the first client closes its session.\n\n");
+    printf("      its files; /W also lets clients write them. /D offers the\n");
+    printf("      disks to image (read-only). /1 exits when the first client\n");
+    printf("      closes its session.\n\n");
     printf("The port defaults to %s, and baud to SPROCKET_BAUD if set, else 9600.\n",
            port_default);
 }
@@ -78,6 +88,26 @@ static int is_option(const char *arg, const char *option)
         }
     }
     return *arg == '\0';
+}
+
+static int serve_disks;
+static int serve_tree;
+
+/* Requests beyond HELLO, PING and CLOSE: the disks and the file tree,
+ * each only when it is being served. */
+static int server_request(uint8_t kind, const uint8_t *in, uint16_t in_len, uint8_t *out,
+                          uint16_t limit, uint8_t *class, uint16_t *code)
+{
+    if (kind == MSG_STORAGE_LIST || kind == MSG_STORAGE_READ) {
+        if (serve_disks) {
+            return storage_request(kind, in, in_len, out, limit, class, code);
+        }
+    } else if (serve_tree) {
+        return tree_request(kind, in, in_len, out, limit, class, code);
+    }
+    *code = 0;
+    *class = ERR_UNSUPPORTED;
+    return -1;
 }
 
 static int server(int argc, char **argv)
@@ -110,6 +140,8 @@ static int server(int argc, char **argv)
             writable = 1;
         } else if (is_option(argv[i], "/1")) {
             once = 1;
+        } else if (is_option(argv[i], "/D")) {
+            serve_disks = 1;
         } else if (argv[i][0] == '/' && argv[i][1] != '\0' && argv[i][2] == '\0') {
             usage();
             return 1;
@@ -144,19 +176,27 @@ static int server(int argc, char **argv)
     client_init(&cl, resp_buf);
     if (dir != NULL) {
         tree_init(dir, writable);
+        serve_tree = 1;
         cl.minor = 1;
         cl.capabilities = CAP_FILE_TREE;
         if (writable) {
             cl.capabilities |= CAP_FILE_WRITE | CAP_FILE_REPLACE;
         }
-        cl.handler = tree_request;
+        cl.handler = server_request;
         cl.reset = tree_reset;
+    }
+    if (serve_disks) {
+        cl.capabilities |= STORAGE_CAPS;
+        cl.handler = server_request;
     }
 
     printf("SPROCKET %s, protocol %d.%d, on %s at %ld 8N1.\n", VERSION,
            PROTO_MAJOR, cl.minor, name, baud);
     if (dir != NULL) {
         printf("Serving %s%s.\n", dir, writable ? ", writable" : ", read-only");
+    }
+    if (serve_disks) {
+        printf("Offering %u disk(s) to image, read-only.\n", storage_init());
     }
     printf("Waiting for a client; press Esc to exit.\n");
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Native protocol v1 session layer, host side: `HELLO` and version and
 //! capability negotiation, `PING`, `CLOSE`, and `ERROR` responses
-//! (`docs/protocol-v1.md` sections 2 to 4).
+//! (`docs/protocol-v1.md` sections 2 to 4), and the requests of v1.1 file
+//! trees and v1 storage.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::frame::{MAX_PAYLOAD, MIN_PAYLOAD};
 use super::link::{self, ERROR, Link, Retry};
+use super::storage::{self, Descriptor, ReadRequest, Unit};
 use super::tree;
 use crate::transport::Transport;
 
@@ -45,6 +47,9 @@ pub struct Options {
     /// The previous session ID used on this port, which the new one must
     /// differ from.
     pub previous_session: Option<u16>,
+    /// Response timeout for storage reads, which may run inside BIOS calls
+    /// that cannot send `PENDING`.
+    pub storage_timeout: Duration,
 }
 
 impl Default for Options {
@@ -57,6 +62,7 @@ impl Default for Options {
             quiet: Duration::from_secs(1),
             response_timeout: None,
             previous_session: None,
+            storage_timeout: link::STORAGE_TIMEOUT,
         }
     }
 }
@@ -326,6 +332,7 @@ pub struct Session<'a> {
     minor: u8,
     max_payload: usize,
     retry: Retry,
+    storage_retry: Retry,
 }
 
 impl<'a> Session<'a> {
@@ -383,6 +390,7 @@ impl<'a> Session<'a> {
             client,
             max_payload,
             retry: Retry::new(timeout),
+            storage_retry: Retry::new(options.storage_timeout.max(timeout)),
         })
     }
 
@@ -553,6 +561,34 @@ impl<'a> Session<'a> {
     pub fn abort(&mut self) -> Result<(), Error> {
         call(&mut self.link, tree::FILE_ABORT, &[], self.retry)?;
         Ok(())
+    }
+
+    /// Whether the client offers disks to image.
+    pub fn has_storage(&self) -> bool {
+        self.client.capabilities.has(Capabilities::STORAGE_LIST)
+    }
+
+    /// `STORAGE_LIST`: the devices the client offers.
+    pub fn storage_list(&mut self) -> Result<Vec<Descriptor>, Error> {
+        let reply = call(&mut self.link, storage::STORAGE_LIST, &[], self.retry)?;
+        storage::decode_list(&reply).map_err(Error::Protocol)
+    }
+
+    /// `STORAGE_READ`: one result per unit asked for, from a device whose
+    /// units are `unit_size` bytes.
+    pub fn storage_read(
+        &mut self,
+        request: &ReadRequest,
+        unit_size: u16,
+    ) -> Result<Vec<Unit>, Error> {
+        let reply = call(
+            &mut self.link,
+            storage::STORAGE_READ,
+            &request.encode(),
+            self.storage_retry,
+        )?;
+        storage::decode_read_response(&reply, request.count, usize::from(unit_size))
+            .map_err(Error::Protocol)
     }
 
     /// End the session with `CLOSE`.

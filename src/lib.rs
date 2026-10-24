@@ -6,6 +6,7 @@
 pub mod client;
 pub(crate) mod console;
 pub mod files;
+pub mod imaging;
 pub mod native;
 pub mod serve;
 pub(crate) mod shell;
