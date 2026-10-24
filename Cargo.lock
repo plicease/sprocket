@@ -300,13 +300,14 @@ dependencies = [
 
 [[package]]
 name = "sprocket"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
  "libc",
  "serialport",
  "tempfile",
+ "windows-sys 0.61.2",
  "zmodem2",
 ]
 
