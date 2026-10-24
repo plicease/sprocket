@@ -5,7 +5,8 @@
 # make test     build and run the host tests against tests/vectors/ and tests/shell/
 # make host     build build/sprocket-client, the same program for a Linux tty/PTY
 #
-# WATCOM is the Open Watcom install directory.
+# WATCOM is the Open Watcom install directory. MAX_PAYLOAD=n builds with a
+# larger payload (up to 4090), for measuring disk imaging speed.
 
 WATCOM ?= $(HOME)/opt/watcom
 export WATCOM
@@ -15,6 +16,9 @@ WCL := wcl
 
 CC ?= cc
 HOST_CFLAGS := -std=c99 -Wall -Wextra -pedantic -Werror -O2
+ifdef MAX_PAYLOAD
+HOST_CFLAGS += -DMAX_PAYLOAD=$(MAX_PAYLOAD)
+endif
 
 VECTORS := ../../tests/vectors
 SHELL_FIXTURES := ../../tests/shell
@@ -36,6 +40,9 @@ build:
 # by design: the only recursion is ls -R, at most 32 levels of a small
 # frame, so -k8192 gives a stack of 8 KB, several times what is used.
 DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we -k8192
+ifdef MAX_PAYLOAD
+DOS_CFLAGS += -dMAX_PAYLOAD=$(MAX_PAYLOAD)
+endif
 
 DOS_SRC := $(CORE) $(TREE) $(CLIENT) src/storage.c src/biosdisk.c src/dosfs.c src/dosport.c \
 	src/main.c

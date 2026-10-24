@@ -33,7 +33,14 @@
 #include "tree.h"
 
 #define VERSION "0.3.0"
+/*
+ * The largest payload accepted and sent. A STORAGE_READ response carries
+ * one 512-byte sector at 1024 and seven at 4090, the protocol's limit;
+ * build with `make MAX_PAYLOAD=4090` to try it.
+ */
+#ifndef MAX_PAYLOAD
 #define MAX_PAYLOAD 1024
+#endif
 
 /*
  * Check the keyboard and timers once per this many idle polls. Nothing
