@@ -61,36 +61,51 @@ static void fill(struct fs_entry *e, const struct find_t *f)
     e->mtime = ((uint32_t)f->wr_date << 16) | f->wr_time;
 }
 
-int fs_scan(const char *path, uint16_t index, struct fs_entry *e)
+/*
+ * "No more files", or "file not found" from find-first in an empty root
+ * directory, is the end; "path not found" means no directory.
+ */
+static int at_end(unsigned rc)
 {
-    struct find_t f;
-    unsigned rc;
+    return rc == 0x12 || rc == 0x02;
+}
 
+int fs_dir_open(struct fs_dir *d, const char *path)
+{
     if (set_pattern(path) != 0) {
         errno = ENOENT;
         return FS_ERROR;
     }
-    rc = _dos_findfirst(pattern, FIND, &f);
-    while (rc == 0) {
-        if (usable(&f)) {
-            if (index == 0) {
-                fill(e, &f);
-                strcpy(e->name, f.name);
-                return FS_OK;
-            }
-            index--;
-        }
-        rc = _dos_findnext(&f);
+    d->rc = _dos_findfirst(pattern, FIND, &d->f);
+    if (d->rc != 0 && !at_end(d->rc)) {
+        errno = ENOENT;
+        return FS_ERROR;
     }
-    /*
-     * "No more files", or "file not found" from find-first in an empty
-     * root directory, is the end; "path not found" means no directory.
-     */
-    if (rc == 0x12 || rc == 0x02) {
+    return FS_OK;
+}
+
+int fs_dir_next(struct fs_dir *d, struct fs_entry *e)
+{
+    /* d->f holds the entry found last, not yet returned. */
+    while (d->rc == 0) {
+        if (usable(&d->f)) {
+            fill(e, &d->f);
+            strcpy(e->name, d->f.name);
+            d->rc = _dos_findnext(&d->f);
+            return FS_OK;
+        }
+        d->rc = _dos_findnext(&d->f);
+    }
+    if (at_end(d->rc)) {
         return FS_END;
     }
     errno = ENOENT;
     return FS_ERROR;
+}
+
+void fs_dir_close(struct fs_dir *d)
+{
+    _dos_findclose(&d->f);
 }
 
 int fs_stat(const char *path, struct fs_entry *e)

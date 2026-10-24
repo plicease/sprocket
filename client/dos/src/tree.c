@@ -137,20 +137,17 @@ static int append(char *path, const char *name, size_t len)
  */
 static uint8_t find_entry(const char *name, size_t len)
 {
+    struct fs_dir d;
     struct fs_entry e;
-    uint16_t index;
     uint8_t similar = 0;
     int rc;
 
-    for (index = 0;; index++) {
-        rc = fs_scan(native, index, &e);
-        if (rc == FS_END) {
-            break;
-        }
-        if (rc != FS_OK) {
-            return ERR_NOT_FOUND;
-        }
+    if (fs_dir_open(&d, native) != FS_OK) {
+        return ERR_NOT_FOUND;
+    }
+    while ((rc = fs_dir_next(&d, &e)) == FS_OK) {
         if (strlen(e.name) == len && memcmp(e.name, name, len) == 0) {
+            fs_dir_close(&d);
             found = e;
             return 0;
         }
@@ -159,6 +156,10 @@ static uint8_t find_entry(const char *name, size_t len)
                 found = e;
             }
         }
+    }
+    fs_dir_close(&d);
+    if (rc != FS_END) {
+        return ERR_NOT_FOUND;
     }
     if (similar == 1) {
         return 0;
@@ -304,6 +305,7 @@ static int list_request(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16
     uint16_t index;
     uint16_t used = 2;
     uint8_t count = 0;
+    struct fs_dir d;
     struct fs_entry e;
     int scan;
 
@@ -318,14 +320,15 @@ static int list_request(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16
     if (!found.dir) {
         return fail(class, ERR_NOT_A_DIRECTORY);
     }
+    if (fs_dir_open(&d, native) != FS_OK) {
+        return fail(class, ERR_NOT_FOUND);
+    }
+    /* One scan for the page: past the first index entries, then the page. */
     out[0] = 0;
-    for (;; index++) {
-        scan = fs_scan(native, index, &e);
-        if (scan == FS_END) {
-            break;
-        }
-        if (scan != FS_OK) {
-            return fail(class, ERR_NOT_FOUND);
+    while ((scan = fs_dir_next(&d, &e)) == FS_OK) {
+        if (index > 0) {
+            index--;
+            continue;
         }
         if (used + ENTRY_FIXED + strlen(e.name) > limit || count == 255) {
             out[0] = FLAG_MORE;
@@ -333,6 +336,10 @@ static int list_request(const uint8_t *in, uint16_t in_len, uint8_t *out, uint16
         }
         used = (uint16_t)(used + put_entry(out + used, &e, e.name));
         count++;
+    }
+    fs_dir_close(&d);
+    if (scan == FS_ERROR) {
+        return fail(class, ERR_NOT_FOUND);
     }
     out[1] = count;
     return used;

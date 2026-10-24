@@ -30,7 +30,7 @@
 #include "proto.h"
 #include "tree.h"
 
-#define VERSION "0.2.2"
+#define VERSION "0.3.0"
 #define MAX_PAYLOAD 1024
 
 /*

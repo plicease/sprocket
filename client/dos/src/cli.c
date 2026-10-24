@@ -321,41 +321,38 @@ static int local_target(const char *arg, char *out)
     return 1;
 }
 
-/* Collect a local directory's entries above mark, as remote_list. */
-static int local_list(const char *path, uint16_t mark)
-{
-    struct fs_entry e;
-    uint16_t index;
-    int rc;
-
-    for (index = 0;; index++) {
-        rc = fs_scan(path, index, &e);
-        if (rc == FS_END) {
-            return REQ_OK;
-        }
-        if (rc != FS_OK) {
-            req_class = ERR_NOT_FOUND;
-            req_message[0] = '\0';
-            return REQ_REFUSED;
-        }
-        if (!list_entry(mark, e.name, (uint8_t)strlen(e.name), e.dir, e.size)) {
-            return LIST_FULL;
-        }
-    }
-}
-
-/* A directory's entries in either tree. */
-static int list_dir(int remote, const char *path, uint16_t mark)
-{
-    return remote ? remote_list(path, mark) : local_list(path, mark);
-}
-
 /* A local path that does not exist, as a request would fail. */
 static int missing(void)
 {
     req_class = ERR_NOT_FOUND;
     req_message[0] = '\0';
     return REQ_REFUSED;
+}
+
+/* Collect a local directory's entries above mark, as remote_list. */
+static int local_list(const char *path, uint16_t mark)
+{
+    struct fs_dir d;
+    struct fs_entry e;
+    int rc;
+
+    if (fs_dir_open(&d, path) != FS_OK) {
+        return missing();
+    }
+    while ((rc = fs_dir_next(&d, &e)) == FS_OK) {
+        if (!list_entry(mark, e.name, (uint8_t)strlen(e.name), e.dir, e.size)) {
+            fs_dir_close(&d);
+            return LIST_FULL;
+        }
+    }
+    fs_dir_close(&d);
+    return rc == FS_END ? REQ_OK : missing();
+}
+
+/* A directory's entries in either tree. */
+static int list_dir(int remote, const char *path, uint16_t mark)
+{
+    return remote ? remote_list(path, mark) : local_list(path, mark);
 }
 
 /*

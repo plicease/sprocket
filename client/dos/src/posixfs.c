@@ -13,6 +13,8 @@
 
 #include "fsys.h"
 
+unsigned long fs_dir_reads;
+
 static uint32_t dos_time(time_t t)
 {
     struct tm tm;
@@ -57,35 +59,45 @@ int fs_stat(const char *path, struct fs_entry *e)
     return FS_OK;
 }
 
-int fs_scan(const char *path, uint16_t index, struct fs_entry *e)
+int fs_dir_open(struct fs_dir *d, const char *path)
 {
-    char full[FS_PATH_MAX + FS_NAME_MAX + 2];
-    DIR *d = opendir(path);
-    struct dirent *item;
-    int result = FS_END;
-
-    if (d == NULL) {
+    if (strlen(path) > FS_PATH_MAX) {
+        errno = ENOENT;
         return FS_ERROR;
     }
-    while ((item = readdir(d)) != NULL) {
-        if (!usable(item->d_name) || strlen(path) + strlen(item->d_name) + 2 > sizeof full) {
+    d->d = opendir(path);
+    if (d->d == NULL) {
+        return FS_ERROR;
+    }
+    strcpy(d->path, path);
+    return FS_OK;
+}
+
+int fs_dir_next(struct fs_dir *d, struct fs_entry *e)
+{
+    char full[FS_PATH_MAX + FS_NAME_MAX + 2];
+    struct dirent *item;
+
+    while ((item = readdir(d->d)) != NULL) {
+        fs_dir_reads++;
+        if (!usable(item->d_name) || strlen(d->path) + strlen(item->d_name) + 2 > sizeof full) {
             continue;
         }
-        strcpy(full, path);
+        strcpy(full, d->path);
         strcat(full, "/");
         strcat(full, item->d_name);
         if (fs_stat(full, e) != FS_OK) {
             continue;
         }
-        if (index == 0) {
-            strcpy(e->name, item->d_name);
-            result = FS_OK;
-            break;
-        }
-        index--;
+        strcpy(e->name, item->d_name);
+        return FS_OK;
     }
-    closedir(d);
-    return result;
+    return FS_END;
+}
+
+void fs_dir_close(struct fs_dir *d)
+{
+    closedir(d->d);
 }
 
 int fs_set_mtime(const char *path, uint32_t mtime)
