@@ -4,6 +4,8 @@
 # make bench    build build/BENCH.EXE, which times the receive path on DOS
 # make test     build and run the host tests against tests/vectors/ and tests/shell/
 # make host     build build/sprocket-client, the same program for a Linux tty/PTY
+# make check-version
+#               check that SPROCKET.EXE's version is the release's (Cargo.toml)
 #
 # WATCOM is the Open Watcom install directory. MAX_PAYLOAD=n builds with a
 # larger payload (up to 4090), for measuring disk imaging speed.
@@ -58,6 +60,16 @@ build/BENCH.EXE: $(CORE) src/dosport.c test/bench.c $(HEADERS) | build
 
 bench: build/BENCH.EXE
 
+# SPROCKET.EXE reports VERSION from src/main.c; a release attaches it to the
+# tag of Cargo.toml's version, so the two must agree.
+check-version:
+	@want=$$(sed -n 's/^version = "\(.*\)"$$/\1/p' ../../Cargo.toml | head -n 1); \
+	have=$$(sed -n 's/^#define VERSION "\(.*\)"$$/\1/p' src/main.c); \
+	if [ -z "$$want" ] || [ "$$want" != "$$have" ]; then \
+	  echo "src/main.c VERSION \"$$have\" is not Cargo.toml's \"$$want\"" >&2; exit 1; \
+	fi; \
+	echo "SPROCKET.EXE version $$have"
+
 build/test_frame: test/test_frame.c test/vectors.c src/frame.c $(HEADERS) | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_frame.c test/vectors.c src/frame.c
 
@@ -88,4 +100,4 @@ test: build/test_frame build/test_proto build/test_tree build/test_shell build/t
 clean:
 	rm -rf build
 
-.PHONY: all bench host test clean
+.PHONY: all bench check-version host test clean

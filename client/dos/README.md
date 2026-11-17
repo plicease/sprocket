@@ -59,7 +59,10 @@ make                 # build/SPROCKET.EXE: -bt=dos -ms -0 (8086, small model)
 make bench           # build/BENCH.EXE: times the receive path on the machine it runs on
 make test            # host tests against ../../tests/vectors/ and ../../tests/shell/
 make host            # build/sprocket-client, the same program on a Linux tty/PTY
+make check-version   # src/main.c's VERSION must be Cargo.toml's version
 ```
+
+`./fetch-watcom` downloads the Open Watcom snapshot that CI and the releases build with (`2026-10-01-Build`, checked by SHA-256) into `build/tools`, and prints its directory, so `make WATCOM=$(./fetch-watcom)` builds the same `SPROCKET.EXE`, byte for byte.
 
 `MAX_PAYLOAD=4090` (as in `make MAX_PAYLOAD=4090`) builds with the protocol's largest payload instead of 1024 bytes, so that a `STORAGE_READ` response carries seven sectors instead of one, for timing imaging on real hardware.
 
