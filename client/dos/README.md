@@ -84,10 +84,10 @@ The build treats all warnings as errors and optimizes for speed (`-ox`) without 
 
 ## Releases
 
-Each release, from the first one made after this was added, has `SPROCKET.EXE` as the asset **`sprocket.exe`**, beside the host programs. The release workflow (`.github/workflows/release.yml`, job `dos`) builds it from the release's commit with the pinned Open Watcom, after `make check-version`, so the program reports the release's version. CI builds it the same way on every push and pull request (`.github/workflows/ci.yml`), checks that a second build is identical, and keeps it as the `SPROCKET.EXE` artifact.
+Each release, from the first one made after this was added, has `SPROCKET.EXE` as the asset **`sprocket.exe`**, beside the host programs, with its license notice (the root `LICENSE`, which also covers libc16) as **`sprocket-exe-license.txt`**. The release workflow (`.github/workflows/release.yml`, job `dos`) builds it from the release's commit with the pinned Open Watcom, after `make check-version`, so the program reports the release's version. CI builds it the same way on every push and pull request (`.github/workflows/ci.yml`), checks that a second build is identical, and keeps it as the `SPROCKET.EXE` artifact.
 
 The asset is a contract with [GR-DOS](https://github.com/gr-dos/gr-dos), which can ship it in its full distribution as `C:\DOS\SPROCKET.EXE` (gr-dos/gr-dos#37). GR-DOS pins a release and checks the asset's name, size and SHA-256 (GitHub's digest), that it is a real-mode DOS `.EXE`, and the repository's license at the release's commit. So keep the name `sprocket.exe`, one DOS program per release, and an 8086 build.
 
 ## Licensing
 
-The source is MIT. The executable links no Open Watcom runtime or startup code: its runtime is [libc16](https://github.com/gr-dos/libc16), also MIT, whose license notice goes with any binary (see [licensing](../../docs/licensing.md)). Open Watcom is only the compiler and linker.
+The source is MIT. The executable links no Open Watcom runtime or startup code: its runtime is [libc16](https://github.com/gr-dos/libc16), also MIT, whose license notice goes with any binary: each release attaches it as `sprocket-exe-license.txt` (see [licensing](../../docs/licensing.md)). Open Watcom is only the compiler and linker.
