@@ -21,7 +21,9 @@ jobs:
   # builds it: its version must be Cargo.toml's, a second build must be byte
   # for byte the same, the link maps of SPROCKET.EXE and BENCH.EXE must show
   # nothing but their objects and libc16 (and the check must reject a link
-  # with Open Watcom's runtime), and the host tests must pass.
+  # with Open Watcom's runtime), a change of MAX_PAYLOAD must rebuild it,
+  # the host tests must pass, and the DOS printf must print the formatter
+  # cases as the host's does, under DOSBox-X.
   dos:
     name: DOS client
     runs-on: ubuntu-24.04
@@ -56,8 +58,17 @@ jobs:
           make WATCOM="$watcom" check-map
           make WATCOM="$watcom" check-map-negative
 
+      - name: Check that MAX_PAYLOAD rebuilds SPROCKET.EXE
+        run: make WATCOM="$(./fetch-watcom)" check-rebuild
+
       - name: Host tests
         run: make test
+
+      - name: Formatter on DOS (DOSBox-X) against the host
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q dosbox-x
+          make WATCOM="$(./fetch-watcom)" dosbox-fmt
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
