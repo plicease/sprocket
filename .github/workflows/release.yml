@@ -45,7 +45,9 @@ jobs:
 
       - name: Build SPROCKET.EXE
         run: |
-          make WATCOM="$(./fetch-watcom)"
+          watcom=$(./fetch-watcom)
+          make WATCOM="$watcom"
+          make WATCOM="$watcom" check-map
           cp build/SPROCKET.EXE build/sprocket.exe
           sha256sum build/sprocket.exe
 

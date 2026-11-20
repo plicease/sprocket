@@ -60,11 +60,12 @@ make bench           # build/BENCH.EXE: times the receive path on the machine it
 make test            # host tests against ../../tests/vectors/ and ../../tests/shell/
 make host            # build/sprocket-client, the same program on a Linux tty/PTY
 make check-version   # src/main.c's VERSION must be Cargo.toml's version
+make check-map       # the link maps show only the programs' objects and libc16
 ```
 
 `./fetch-watcom` fetches libc16 and the Open Watcom snapshot it names (`2026-10-01-Build`, checked by SHA-256) into `build/tools`, and prints its directory; CI and the releases build with `make WATCOM=$(./fetch-watcom)`, which gives the same `SPROCKET.EXE`, byte for byte, as a plain `make`.
 
-The objects are compiled with `wcc -zl -zld -x` against libc16's headers (and `include/stdint.h`, which libc16 lacks) and linked by `wlink` with `option nodefaultlibs` and libc16's `LIBC16.LIB` only; each link writes a map beside the executable. libc16 has no `printf` family, so `src/dosfmt.c` provides `printf` and `sprintf` for the integer and string conversions SPROCKET uses (`test/test_dosfmt.c` checks it against the host's). The UART and BIOS keyboard are reached with inline code (`#pragma aux`) rather than library calls. [docs/libc16-migration.md](../../docs/libc16-migration.md) has the inventory of what the programs need from a runtime.
+The objects are compiled with `wcc -zl -zld -x` against libc16's headers (and `include/stdint.h`, which libc16 lacks) and linked by `wlink` with `option nodefaultlibs` and libc16's `LIBC16.LIB` only; each link writes a map beside the executable. `make check-map` checks both maps (`test/check-map`): only the program's own objects and members of the pinned `LIBC16.LIB` may be linked, with libc16's startup, and neither executable may carry Open Watcom's runtime banner. `make check-map-negative` relinks SPROCKET's objects with Open Watcom's runtime searched first, and with a stray object, and requires the check to reject both; CI runs both. libc16 has no `printf` family, so `src/dosfmt.c` provides `printf` and `sprintf` for the integer and string conversions SPROCKET uses (`test/test_dosfmt.c` checks it against the host's). The UART and BIOS keyboard are reached with inline code (`#pragma aux`) rather than library calls. [docs/libc16-migration.md](../../docs/libc16-migration.md) has the inventory of what the programs need from a runtime.
 
 `MAX_PAYLOAD=4090` (as in `make MAX_PAYLOAD=4090`) builds with the protocol's largest payload instead of 1024 bytes, so that a `STORAGE_READ` response carries seven sectors instead of one, for timing imaging on real hardware.
 

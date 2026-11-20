@@ -19,7 +19,9 @@ jobs:
   # SPROCKET.EXE, linked with the pinned libc16 and built with the Open
   # Watcom it names (client/dos/fetch-libc16, fetch-watcom), as the release
   # builds it: its version must be Cargo.toml's, a second build must be byte
-  # for byte the same, and the host tests must pass.
+  # for byte the same, the link maps of SPROCKET.EXE and BENCH.EXE must show
+  # nothing but their objects and libc16 (and the check must reject a link
+  # with Open Watcom's runtime), and the host tests must pass.
   dos:
     name: DOS client
     runs-on: ubuntu-24.04
@@ -47,6 +49,12 @@ jobs:
           make WATCOM="$watcom"
           cmp build/first.exe build/SPROCKET.EXE
           sha256sum build/SPROCKET.EXE
+
+      - name: Check the link maps
+        run: |
+          watcom=$(./fetch-watcom)
+          make WATCOM="$watcom" check-map
+          make WATCOM="$watcom" check-map-negative
 
       - name: Host tests
         run: make test

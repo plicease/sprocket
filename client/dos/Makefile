@@ -79,9 +79,9 @@ HOST_SRC := $(CORE) $(TREE) $(CLIENT) src/storage.c src/imgdisk.c src/posixfs.c 
 # (MAX_PAYLOAD), and $@ is linked with a map next to it.
 dos_compile = $(WATCOM_ENV) && mkdir -p $(1) && for src in $(2); do \
 	wcc $(DOS_CFLAGS) -fo=$(1)/$$(basename $$src .c).obj $$src || exit 1; done
+dos_objs = $(foreach s,$(2),$(1)/$(basename $(notdir $(s))).obj)
 dos_link = $(WATCOM_ENV) && wlink option quiet, nodefaultlibs, map=$(basename $@).map, stack=8192 \
-	format dos name $@ $(foreach s,$(2),file $(1)/$(basename $(notdir $(s))).obj) \
-	library $(LIBC16)
+	format dos name $@ $(addprefix file ,$(call dos_objs,$(1),$(2))) library $(LIBC16)
 
 build/SPROCKET.EXE: $(DOS_SRC) $(DOS_HEADERS) $(LIBC16) $(TOOLS_ENV) | build
 	$(call dos_compile,build/obj/SPROCKET,$(DOS_SRC))
@@ -105,6 +105,21 @@ build/tools.env: $(LIBC16) | build
 	  && printf 'WATCOM=%s\n' "$$watcom" > $@
 
 bench: build/BENCH.EXE
+
+# Each program's map must show only its own objects and members of the
+# pinned libc16 (test/check-map), and neither may carry Open Watcom's
+# runtime banner. check-map-negative relinks SPROCKET's objects with Open
+# Watcom's own runtime, and with an extra object, and requires check-map
+# to reject both.
+check-map: build/SPROCKET.EXE build/BENCH.EXE
+	test/check-map build/SPROCKET.map $(LIBC16) $(call dos_objs,build/obj/SPROCKET,$(DOS_SRC))
+	test/check-map build/BENCH.map $(LIBC16) $(call dos_objs,build/obj/BENCH,$(BENCH_SRC))
+	@if grep -l 'Open Watcom C/C++' build/SPROCKET.EXE build/BENCH.EXE; then \
+	  echo "Open Watcom's runtime banner is in the files above" >&2; exit 1; fi
+
+check-map-negative: build/SPROCKET.EXE
+	$(WATCOM_ENV) && test/check-map-negative build/neg $(LIBC16) \
+	  $(call dos_objs,build/obj/SPROCKET,$(DOS_SRC))
 
 # SPROCKET.EXE reports VERSION from src/main.c; a release attaches it to the
 # tag of Cargo.toml's version, so the two must agree.
@@ -153,4 +168,4 @@ test: build/test_frame build/test_proto build/test_tree build/test_shell build/t
 clean:
 	rm -rf build
 
-.PHONY: all bench check-version host test clean
+.PHONY: all bench check-map check-map-negative check-version host test clean

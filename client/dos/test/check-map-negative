@@ -1,0 +1,94 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Negative test of test/check-map: relink a program's objects with
+# something it must not link, and require check-map to reject each map,
+# with the reason expected. A plain relink must pass first, so a failure
+# cannot come from the harness itself.
+#
+#   watcom-runtime  Open Watcom's own C runtime (clibs.lib) searched before
+#                   libc16: it supplies the startup and the helpers.
+#   extra-object    an object the program does not list.
+#   missing-object  an object listed that the link does not have.
+#
+# usage: test/check-map-negative DIR LIBRARY OBJECT...
+# with WATCOM set and its binl64 on PATH (make check-map-negative).
+
+set -eu
+
+if [ $# -lt 3 ]; then
+    echo "usage: $0 DIR LIBRARY OBJECT..." >&2
+    exit 2
+fi
+dir=$1
+lib=$2
+shift 2
+check=$(dirname "$0")/check-map
+clibs=$WATCOM/lib286/dos/clibs.lib
+failures=0
+
+mkdir -p "$dir"
+
+# link NAME [extra wlink directives]: link the objects into DIR/NAME.EXE.
+link() {
+    name=$1
+    shift
+    files=
+    for o in "$@" $objects; do
+        files="$files $o"
+    done
+    # shellcheck disable=SC2086
+    wlink option quiet, nodefaultlibs, map="$dir/$name.map", stack=8192 format dos \
+        name "$dir/$name.EXE" $files $libs >"$dir/$name.log" 2>&1 || true
+}
+
+objects=
+for o in "$@"; do
+    objects="$objects file $o"
+done
+
+# expect NAME MESSAGE [OBJECT...]: check-map must fail on DIR/NAME.map,
+# saying MESSAGE.
+expect() {
+    name=$1
+    msg=$2
+    shift 2
+    if "$check" "$dir/$name.map" "$lib" "$@" >"$dir/$name.check" 2>&1; then
+        echo "FAIL: $name: check-map accepted the map"
+        failures=$((failures + 1))
+    elif ! grep -q -- "$msg" "$dir/$name.check"; then
+        echo "FAIL: $name: check-map failed, but not with \"$msg\":"
+        sed 's/^/    /' "$dir/$name.check"
+        failures=$((failures + 1))
+    else
+        echo "ok: $name rejected ($(grep -c . "$dir/$name.check") errors)"
+    fi
+}
+
+# The control: the same objects and libc16 only.
+libs="library $lib"
+link control
+if "$check" "$dir/control.map" "$lib" "$@"; then
+    echo "ok: control accepted"
+else
+    echo "FAIL: control: a plain relink was rejected"
+    exit 1
+fi
+
+libs="library $clibs library $lib"
+link watcom-runtime
+expect watcom-runtime "module not allowed: $clibs(" "$@"
+
+printf 'int sprocket_extra_object = 1;\n' >"$dir/extra.c"
+wcc -q -zq -zl -zld -x -bt=dos -ms -0 -fo="$dir/extra.obj" "$dir/extra.c"
+libs="library $lib"
+link extra-object file "$dir/extra.obj"
+expect extra-object "module not allowed: $dir/extra.obj" "$@"
+
+cp "$dir/control.map" "$dir/missing-object.map"
+expect missing-object "object missing from the link: $dir/absent.obj" "$@" "$dir/absent.obj"
+
+if [ "$failures" -ne 0 ]; then
+    exit 1
+fi
+echo "check-map-negative: ok"
