@@ -76,7 +76,7 @@ static long default_baud(void)
 {
     const char *env = getenv("SPROCKET_BAUD");
 
-    return env != NULL && *env != '\0' ? atol(env) : 9600L;
+    return env != NULL && *env != '\0' ? strtol(env, NULL, 10) : 9600L;
 }
 
 /* arg is option, ignoring ASCII case; option is in upper case. */
@@ -153,7 +153,7 @@ static int server(int argc, char **argv)
         }
     }
     name = args[0] != NULL ? args[0] : port_default;
-    baud = args[1] != NULL ? atol(args[1]) : default_baud();
+    baud = args[1] != NULL ? strtol(args[1], NULL, 10) : default_baud();
     dir = args[2];
     if (writable && dir == NULL) {
         printf("/W needs a directory to serve.\n");
@@ -273,8 +273,9 @@ static int client(int argc, char **argv)
         usage();
         return 1;
     }
-    return cli_run(argc > 0 ? argv[0] : port_default, argc > 1 ? atol(argv[1]) : default_baud(),
-                   resp_buf, rx_buf, MAX_PAYLOAD, 0);
+    return cli_run(argc > 0 ? argv[0] : port_default,
+                   argc > 1 ? strtol(argv[1], NULL, 10) : default_baud(), resp_buf, rx_buf,
+                   MAX_PAYLOAD, 0);
 }
 
 int main(int argc, char **argv)

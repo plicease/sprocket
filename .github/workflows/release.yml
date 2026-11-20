@@ -19,9 +19,9 @@ jobs:
       publisher: "plicease"
 
   # When `release` has made v<version>, SPROCKET.EXE for DOS is attached to
-  # it as sprocket.exe, built from the same commit with the pinned Open
-  # Watcom (client/dos/fetch-watcom), its version checked against
-  # Cargo.toml's. The asset's name and contents are a contract with GR-DOS,
+  # it as sprocket.exe, built from the same commit with the pinned libc16
+  # and the Open Watcom it names (client/dos/fetch-libc16, fetch-watcom),
+  # its version checked against Cargo.toml's. The asset's name and contents are a contract with GR-DOS,
   # which ships it (client/dos/README.md, "Releases").
   dos:
     name: DOS client

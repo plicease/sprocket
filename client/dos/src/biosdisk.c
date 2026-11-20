@@ -21,7 +21,6 @@
  * a bounce buffer.
  */
 #include <dos.h>
-#include <i86.h>
 #include <stdio.h>
 #include <string.h>
 

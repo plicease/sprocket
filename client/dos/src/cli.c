@@ -16,7 +16,10 @@
 
 #ifdef __WATCOMC__
 #include <direct.h>
+/* libc16's signal takes a __cdecl handler. */
+#define HANDLER __cdecl
 #else
+#define HANDLER
 #include <unistd.h>
 #endif
 
@@ -57,7 +60,7 @@ static char home[FS_PATH_MAX + 1];
 static char walk_path[FS_PATH_MAX + 1];
 static char walk_prefix[SHELL_PATH_MAX + 2];
 
-static void on_break(int sig)
+static void HANDLER on_break(int sig)
 {
     broken = 1;
     signal(sig, on_break);

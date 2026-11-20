@@ -37,8 +37,10 @@ Baseline: `SPROCKET.EXE` 45,944 bytes (memory size 72,800, stack 8,192);
 `printf`, `_bios_keybrd`, `isatty`, `read`, `strnicmp` and the 32-bit helpers.
 
 Not in the list because Watcom inlines them under `-ox` with its own headers:
-`inp`/`outp` (UART access, every byte), and `memcpy memset memcmp strlen
-strcpy strcmp strchr`. `MK_FP`, `FP_SEG`, `FP_OFF` are macros.
+`inp`/`outp` (UART access, every byte), and `memcpy memset memcmp memchr
+strlen strcpy strcmp strchr`. `MK_FP`, `FP_SEG`, `FP_OFF` are macros. The
+first build against libc16's headers found `memchr` and `<stdint.h>`
+missing; both are in the table below.
 
 ## Against libc16 v0.17
 
@@ -63,6 +65,8 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
 | `_doserrno` | `fs_error_code()`, the DOS code sent to the host after a failed `fopen`/`fwrite`/`rename` | not provided, by design | send `errno` (as the POSIX build already does), or wrap those calls with own DOS calls; libc16 maps most codes to `EACCES`/`ENOENT`, so detail is lost. Note Watcom's `_doserrno` is already stale after a short `fwrite` (disk full is not a DOS error) |
 | `atol` | main: `PORT`/baud parsing | only `atoi`, `strtol` | `strtol(s, NULL, 10)` |
 | `<bios.h>`, `<i86.h>` | dosport, biosdisk | headers absent | include `<dos.h>` instead |
+| `<stdint.h>` | most headers | absent | `client/dos/include/stdint.h`, the exact-width types for Open Watcom's 16-bit targets |
+| `memchr` | tree: path splitting | missing (C89) | a local loop in `tree.c`; a candidate for libc16 |
 
 **Interface differences to handle:**
 
@@ -77,9 +81,10 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
 - **Unbuffered streams.** libc16 streams start unbuffered; Watcom's are
   buffered. Uploads (`fwrite` of one DATA payload) and downloads (`fread`)
   already move a payload per call, so DOS call counts barely change. Console
-  output does: `ls` listings and progress lines would make one DOS write per
-  `fputc`/`putchar`. Call `setvbuf(stdout, NULL, _IOLBF, BUFSIZ)` at startup
-  (libc16 0.16+), keeping the `fflush(stdout)` calls before waits.
+  output would, if each character were written alone; but the local
+  `printf` hands each message to `fwrite` in 64-byte blocks, and the only
+  other console output is `putchar` echoing a key. So no `setvbuf` (which
+  would link the heap).
 - **Library name.** The small-model library is `LIBC16.LIB`, not
   `LIBC16S.LIB` as the issue says.
 - **Toolchain.** libc16 v0.17 pins the same Open Watcom snapshot

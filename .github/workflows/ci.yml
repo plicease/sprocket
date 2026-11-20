@@ -16,9 +16,10 @@ jobs:
   ci:
     uses: uperl/action-rust-ci/.github/workflows/ci.yml@v1
 
-  # SPROCKET.EXE, with the pinned Open Watcom (client/dos/fetch-watcom), as
-  # the release builds it: its version must be Cargo.toml's, a second build
-  # must be byte for byte the same, and the host tests must pass.
+  # SPROCKET.EXE, linked with the pinned libc16 and built with the Open
+  # Watcom it names (client/dos/fetch-libc16, fetch-watcom), as the release
+  # builds it: its version must be Cargo.toml's, a second build must be byte
+  # for byte the same, and the host tests must pass.
   dos:
     name: DOS client
     runs-on: ubuntu-24.04
@@ -32,7 +33,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: client/dos/build/tools
-          key: watcom-ubuntu-24.04-${{ hashFiles('client/dos/fetch-watcom') }}
+          key: watcom-ubuntu-24.04-${{ hashFiles('client/dos/fetch-watcom', 'client/dos/fetch-libc16') }}
 
       - name: Check the version
         run: make check-version

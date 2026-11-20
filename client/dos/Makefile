@@ -1,20 +1,33 @@
 # SPDX-License-Identifier: MIT
 #
-# make          build build/SPROCKET.EXE with Open Watcom (8086, small model)
+# make          build build/SPROCKET.EXE with Open Watcom and libc16 (8086, small model)
 # make bench    build build/BENCH.EXE, which times the receive path on DOS
 # make test     build and run the host tests against tests/vectors/ and tests/shell/
 # make host     build build/sprocket-client, the same program for a Linux tty/PTY
 # make check-version
 #               check that SPROCKET.EXE's version is the release's (Cargo.toml)
 #
-# WATCOM is the Open Watcom install directory. MAX_PAYLOAD=n builds with a
-# larger payload (up to 4090), for measuring disk imaging speed.
+# The DOS programs link libc16 (github.com/gr-dos/libc16), not Open Watcom's
+# C runtime. By default fetch-libc16 fetches the pinned release into
+# build/libc16, and its tools/fetch-watcom the Open Watcom snapshot it was
+# built with into build/tools. LIBC16_ROOT=dir uses another libc16 tree (a
+# release, or a checkout built with its make); WATCOM=dir another Open
+# Watcom. MAX_PAYLOAD=n builds with a larger payload (up to 4090), for
+# measuring disk imaging speed.
 
-WATCOM ?= $(HOME)/opt/watcom
-export WATCOM
-export INCLUDE := $(WATCOM)/h
-export PATH := $(WATCOM)/binl64:$(PATH)
-WCL := wcl
+LIBC16_ROOT ?= build/libc16
+# A release tree, or a checkout whose make stages the same layout in
+# build/stage.
+LIBC16_DIR := $(if $(wildcard $(LIBC16_ROOT)/build/stage/VERSION),$(LIBC16_ROOT)/build/stage,$(LIBC16_ROOT))
+LIBC16 := $(LIBC16_DIR)/lib/LIBC16.LIB
+
+ifeq ($(WATCOM),)
+TOOLS_ENV := build/tools.env
+WATCOM_ENV = . ./$(TOOLS_ENV) && export WATCOM && PATH="$$WATCOM/binl64:$$PATH"
+else
+TOOLS_ENV :=
+WATCOM_ENV = WATCOM='$(WATCOM)' && export WATCOM && PATH="$$WATCOM/binl64:$$PATH"
+endif
 
 CC ?= cc
 HOST_CFLAGS := -std=c99 -Wall -Wextra -pedantic -Werror -O2
@@ -40,23 +53,56 @@ build:
 # 8088) from about 590 to 330 us (test/bench.c, in a version that also
 # counted the frame check). Without the check the stack must be big enough
 # by design: the only recursion is ls -R, at most 32 levels of a small
-# frame, so -k8192 gives a stack of 8 KB, several times what is used.
-DOS_CFLAGS := -q -bt=dos -ms -0 -ox -s -wx -we -k8192
+# frame, so the link's stack=8192 gives a stack of 8 KB, several times
+# what is used.
+#
+# -zl -zld: no default library records in the objects; -x: no headers but
+# include/ (<stdint.h>, which libc16 lacks) and libc16's; -fi: every object
+# sees the declarations of printf and sprintf, which src/dosfmt.c provides
+# because libc16 has no printf family. The link names no library but
+# libc16 (option nodefaultlibs).
+DOS_CFLAGS := -q -zq -zl -zld -x -bt=dos -ms -0 -ox -s -wx -we \
+	-Iinclude -I$(LIBC16_DIR)/include -fi=src/dosfmt.h
 ifdef MAX_PAYLOAD
 DOS_CFLAGS += -dMAX_PAYLOAD=$(MAX_PAYLOAD)
 endif
+DOS_HEADERS := $(HEADERS) include/stdint.h
 
 DOS_SRC := $(CORE) $(TREE) $(CLIENT) src/storage.c src/biosdisk.c src/dosfs.c src/dosport.c \
-	src/main.c
+	src/main.c src/dosfmt.c
+BENCH_SRC := $(CORE) src/dosport.c src/dosfmt.c test/bench.c
 HOST_SRC := $(CORE) $(TREE) $(CLIENT) src/storage.c src/imgdisk.c src/posixfs.c \
 	src/posixport.c src/main.c
 
-build/SPROCKET.EXE: $(DOS_SRC) $(HEADERS) | build
-	cd build && $(WCL) $(DOS_CFLAGS) -fe=SPROCKET.EXE $(addprefix ../,$(DOS_SRC))
+# $(call dos_compile,objdir,sources) and $(call dos_link,objdir,sources):
+# every source is compiled again for each build, as the flags may differ
+# (MAX_PAYLOAD), and $@ is linked with a map next to it.
+dos_compile = $(WATCOM_ENV) && mkdir -p $(1) && for src in $(2); do \
+	wcc $(DOS_CFLAGS) -fo=$(1)/$$(basename $$src .c).obj $$src || exit 1; done
+dos_link = $(WATCOM_ENV) && wlink option quiet, nodefaultlibs, map=$(basename $@).map, stack=8192 \
+	format dos name $@ $(foreach s,$(2),file $(1)/$(basename $(notdir $(s))).obj) \
+	library $(LIBC16)
 
-build/BENCH.EXE: $(CORE) src/dosport.c test/bench.c $(HEADERS) | build
-	cd build && $(WCL) $(DOS_CFLAGS) -fe=BENCH.EXE \
-		$(addprefix ../,$(CORE) src/dosport.c test/bench.c)
+build/SPROCKET.EXE: $(DOS_SRC) $(DOS_HEADERS) $(LIBC16) $(TOOLS_ENV) | build
+	$(call dos_compile,build/obj/SPROCKET,$(DOS_SRC))
+	$(call dos_link,build/obj/SPROCKET,$(DOS_SRC))
+
+build/BENCH.EXE: $(BENCH_SRC) $(DOS_HEADERS) $(LIBC16) $(TOOLS_ENV) | build
+	$(call dos_compile,build/obj/BENCH,$(BENCH_SRC))
+	$(call dos_link,build/obj/BENCH,$(BENCH_SRC))
+
+# The pinned libc16 release. A LIBC16_ROOT given on the command line must
+# already be built.
+ifeq ($(LIBC16_ROOT),build/libc16)
+$(LIBC16): fetch-libc16
+	./fetch-libc16 $(LIBC16_ROOT)
+	touch $@
+endif
+
+# The Open Watcom snapshot libc16 names, as a shell assignment.
+build/tools.env: $(LIBC16) | build
+	watcom=$$(sh $(LIBC16_DIR)/tools/fetch-watcom $(CURDIR)/build/tools) \
+	  && printf 'WATCOM=%s\n' "$$watcom" > $@
 
 bench: build/BENCH.EXE
 
@@ -90,12 +136,19 @@ build/sprocket-client: $(HOST_SRC) $(HEADERS) | build
 
 host: build/sprocket-client
 
-test: build/test_frame build/test_proto build/test_tree build/test_shell build/test_storage
+# The DOS build's printf (src/dosfmt.c), against the host's; no
+# _FORTIFY_SOURCE, whose inline printf would clash with the renamed one.
+build/test_dosfmt: test/test_dosfmt.c src/dosfmt.c src/dosfmt.h | build
+	$(CC) $(HOST_CFLAGS) -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -o $@ test/test_dosfmt.c
+
+test: build/test_frame build/test_proto build/test_tree build/test_shell build/test_storage \
+	build/test_dosfmt
 	build/test_frame $(VECTORS)
 	build/test_proto $(VECTORS)
 	build/test_tree $(VECTORS)
 	build/test_shell $(SHELL_FIXTURES)
 	build/test_storage
+	build/test_dosfmt
 
 clean:
 	rm -rf build

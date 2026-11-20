@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# Fetch the pinned libc16 release (github.com/gr-dos/libc16) into DIR:
+# download libc16-VERSION.zip, check its SHA-256 against the one below
+# before unpacking it, and unpack its libc16-VERSION/ directory as DIR.
+# Reuses DIR if it already holds that archive.
+#
+# The canonical copy is consumers/fetch-libc16 in libc16. A utility keeps
+# a copy (here client/dos/fetch-libc16) and changes version and sha256 together,
+# deliberately, to the values of a published release (its .sha256 asset);
+# see libc16's docs/CONSUMERS.md, "Using libc16".
+#
+# usage: client/dos/fetch-libc16 [DIR]  (default: build/libc16)
+#
+# LIBC16_URL, if set, is fetched instead of the release asset (a mirror,
+# or a candidate archive being tested); it must have the same SHA-256.
+
+set -eu
+
+version=0.17
+sha256=ad4e39263a8468f39275ddeae7651bfbaf4381e315b3642d0ed88b7bd2528645
+
+url=${LIBC16_URL:-https://github.com/gr-dos/libc16/releases/download/v$version/libc16-$version.zip}
+dir=${1:-build/libc16}
+stamp="$dir/.zip-sha256"
+
+if [ "$(cat "$stamp" 2>/dev/null)" != "$sha256" ]; then
+  mkdir -p "$(dirname "$dir")"
+  zip="$dir.zip"
+  if ! { [ -f "$zip" ] && echo "$sha256  $zip" | sha256sum -c --status; }; then
+    rm -f "$zip"
+    curl -fsSL -o "$zip.tmp" "$url"
+    echo "$sha256  $zip.tmp" | sha256sum -c --quiet
+    mv "$zip.tmp" "$zip"
+  fi
+  rm -rf "$dir" "$dir.tmp"
+  mkdir -p "$dir.tmp"
+  unzip -q -DD "$zip" -d "$dir.tmp"     # files get the current time
+  [ "$(cat "$dir.tmp/libc16-$version/VERSION")" = "$version" ]
+  mv "$dir.tmp/libc16-$version" "$dir"
+  rmdir "$dir.tmp"
+  echo "$sha256" > "$stamp"
+fi

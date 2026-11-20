@@ -52,21 +52,23 @@ The baud rate defaults to the `SPROCKET_BAUD` environment variable if it is set 
 
 ## Building
 
-Needs Open Watcom (2.0) with `WATCOM` pointing at it (default `~/opt/watcom`), GNU make, and a host C compiler for the tests.
+Needs GNU make, curl, unzip, xz and a host C compiler; the first `make` fetches the rest. The DOS programs link [libc16](https://github.com/gr-dos/libc16), an MIT-licensed C runtime for 16-bit DOS, instead of Open Watcom's: `./fetch-libc16` downloads the pinned release (0.17, checked by SHA-256) into `build/libc16`, and that release's `tools/fetch-watcom` the Open Watcom snapshot it was built with into `build/tools`. `LIBC16_ROOT=dir` builds against another libc16 tree (a release, or a checkout built with its `make`), and `WATCOM=dir` with another Open Watcom.
 
 ```sh
-make                 # build/SPROCKET.EXE: -bt=dos -ms -0 (8086, small model)
+make                 # build/SPROCKET.EXE: -bt=dos -ms -0 (8086, small model), with libc16
 make bench           # build/BENCH.EXE: times the receive path on the machine it runs on
 make test            # host tests against ../../tests/vectors/ and ../../tests/shell/
 make host            # build/sprocket-client, the same program on a Linux tty/PTY
 make check-version   # src/main.c's VERSION must be Cargo.toml's version
 ```
 
-`./fetch-watcom` downloads the Open Watcom snapshot that CI and the releases build with (`2026-10-01-Build`, checked by SHA-256) into `build/tools`, and prints its directory, so `make WATCOM=$(./fetch-watcom)` builds the same `SPROCKET.EXE`, byte for byte.
+`./fetch-watcom` fetches libc16 and the Open Watcom snapshot it names (`2026-10-01-Build`, checked by SHA-256) into `build/tools`, and prints its directory; CI and the releases build with `make WATCOM=$(./fetch-watcom)`, which gives the same `SPROCKET.EXE`, byte for byte, as a plain `make`.
+
+The objects are compiled with `wcc -zl -zld -x` against libc16's headers (and `include/stdint.h`, which libc16 lacks) and linked by `wlink` with `option nodefaultlibs` and libc16's `LIBC16.LIB` only; each link writes a map beside the executable. libc16 has no `printf` family, so `src/dosfmt.c` provides `printf` and `sprintf` for the integer and string conversions SPROCKET uses (`test/test_dosfmt.c` checks it against the host's). The UART and BIOS keyboard are reached with inline code (`#pragma aux`) rather than library calls. [docs/libc16-migration.md](../../docs/libc16-migration.md) has the inventory of what the programs need from a runtime.
 
 `MAX_PAYLOAD=4090` (as in `make MAX_PAYLOAD=4090`) builds with the protocol's largest payload instead of 1024 bytes, so that a `STORAGE_READ` response carries seven sectors instead of one, for timing imaging on real hardware.
 
-The build treats all warnings as errors and optimizes for speed (`-ox`) without per-call stack checks (`-s`; the only recursion is `ls -R`, bounded at 32 levels, and the stack is set to 8 KB). Under 86Box as a 4.77 MHz 8088, those two settings cut `BENCH`'s per-byte figure from about 590 to 330 µs. Those figures come from an earlier `BENCH` that also counted each frame's CRC check as per-byte time, so they overstate the receive path; they still show the relative gain. The executable is about 40 KB.
+The build treats all warnings as errors and optimizes for speed (`-ox`) without per-call stack checks (`-s`; the only recursion is `ls -R`, bounded at 32 levels, and the stack is set to 8 KB). Under 86Box as a 4.77 MHz 8088, those two settings cut `BENCH`'s per-byte figure from about 590 to 330 µs. Those figures come from an earlier `BENCH` that also counted each frame's CRC check as per-byte time, so they overstate the receive path; they still show the relative gain. The executable is about 32 KB.
 
 ## Testing
 
@@ -85,4 +87,4 @@ The asset is a contract with [GR-DOS](https://github.com/gr-dos/gr-dos), which c
 
 ## Licensing
 
-The source is MIT. The executable links Open Watcom's C runtime (the file carries its banner, `Open Watcom C/C++16 Run-Time system`); check its redistribution terms before distributing binaries (see [licensing](../../docs/licensing.md)). The release asset `sprocket.exe` is such a binary, published from the first version bump after the `dos` release job was added, so those terms, and any notice they require with it, are to be settled before that bump.
+The source is MIT. The executable links no Open Watcom runtime or startup code: its runtime is [libc16](https://github.com/gr-dos/libc16), also MIT, whose license notice goes with any binary (see [licensing](../../docs/licensing.md)). Open Watcom is only the compiler and linker.
