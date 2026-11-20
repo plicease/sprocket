@@ -22,19 +22,6 @@
 
 static char pattern[FS_PATH_MAX + 5];
 
-/*
- * INT 21h 5701h: set the date and time of the file open on handle. Returns
- * 0, or DOS's error code (CF set). The time set is kept when the handle is
- * closed. libc16 has no _dos_setftime (gr-dos/libc16#37).
- */
-static unsigned set_ftime(int handle, unsigned date, unsigned time);
-#pragma aux set_ftime = \
-    "mov ax, 5701h" \
-    "int 21h" \
-    "sbb dx, dx" \
-    "and ax, dx" \
-    parm [bx] [dx] [cx] value [ax] modify exact [ax dx];
-
 /* Set pattern to "*.*" in the directory at path. Returns 0, or -1 if it
  * is too long. */
 static int set_pattern(const char *path)
@@ -171,7 +158,7 @@ int fs_set_mtime(const char *path, uint32_t mtime)
     if (_dos_open(path, O_RDONLY, &fd) != 0) {
         return FS_ERROR;
     }
-    rc = set_ftime(fd, (unsigned)(mtime >> 16), (unsigned)(mtime & 0xFFFF));
+    rc = _dos_setftime(fd, (unsigned)(mtime >> 16), (unsigned)(mtime & 0xFFFF));
     _dos_close(fd);
     return rc == 0 ? FS_OK : FS_ERROR;
 }
@@ -204,8 +191,7 @@ int fs_name_ok(const char *name)
     return 1;
 }
 
-/* libc16 keeps no _doserrno, so the detail is errno, as on Linux. */
 uint16_t fs_error_code(void)
 {
-    return (uint16_t)errno;
+    return (uint16_t)_doserrno;
 }

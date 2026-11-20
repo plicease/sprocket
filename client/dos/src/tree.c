@@ -168,17 +168,6 @@ static uint8_t find_entry(const char *name, size_t len)
 }
 
 /* A component a tree path may not hold (protocol v1.1 section 3). */
-/* The first '/' from p up to end, or NULL. (memchr, which libc16 lacks.) */
-static const char *next_slash(const char *p, const char *end)
-{
-    for (; p < end; p++) {
-        if (*p == '/') {
-            return p;
-        }
-    }
-    return NULL;
-}
-
 static int bad_component(const char *name, size_t len)
 {
     size_t i;
@@ -221,7 +210,7 @@ static uint8_t resolve(const uint8_t *path, uint8_t len, int leave_last, const c
         p++;
     }
     while (p < end) {
-        slash = next_slash(p, end);
+        slash = memchr(p, '/', (size_t)(end - p));
         n = slash ? (size_t)(slash - p) : (size_t)(end - p);
         if (bad_component(p, n) || (slash && slash + 1 == end)) {
             return ERR_NOT_FOUND;

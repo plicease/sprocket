@@ -3,6 +3,8 @@
 Issue [#27](https://github.com/plicease/sprocket/issues/27), task 1: what
 `SPROCKET.EXE` and `BENCH.EXE` take from a C runtime, and how that compares
 with [libc16](https://github.com/gr-dos/libc16) **v0.17** (latest, 2026-11-19).
+The build now pins **v0.18**, which added three of the gaps found here; see
+"libc16 v0.18" below.
 
 ## Method
 
@@ -60,13 +62,13 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
 | `printf`, `sprintf` | 107 + 12 calls, cli/main/shell/biosdisk/dosport/bench | not provided, by design (decision 3) | see "Formatted output" |
 | `inp`, `outp` | dosport, per received byte | not in `<conio.h>` | inline `#pragma aux` `in`/`out` in `client/dos` — must stay inline for the receive-path timing |
 | `_bios_keybrd` (`<bios.h>`) | dosport: Esc check and keys | no `<bios.h>` | local INT 16h wrapper in `dosport.c` (or small `#pragma aux`); a libc16 `_bios_keybrd` is also reasonable (Microsoft C 5.1) |
-| `_dos_setftime` | dosfs: set mtime after upload | missing | local inline INT 21h 5701h in `dosfs.c`, on a read-only handle; requested upstream as gr-dos/libc16#37 |
+| `_dos_setftime` | dosfs: set mtime after upload | missing | local inline INT 21h 5701h in `dosfs.c`, on a read-only handle; requested upstream as gr-dos/libc16#37, **added in 0.18** |
 | `_dos_findclose` | dosfs | missing | drop: a no-op on DOS (Watcom/OS2 compatibility only) |
-| `_doserrno` | `fs_error_code()`, the DOS code sent to the host after a failed `fopen`/`fwrite`/`rename` | not provided, by design | send `errno` (as the POSIX build already does), or wrap those calls with own DOS calls; libc16 maps most codes to `EACCES`/`ENOENT`, so detail is lost. Note Watcom's `_doserrno` is already stale after a short `fwrite` (disk full is not a DOS error) |
+| `_doserrno` | `fs_error_code()`, the DOS code sent to the host after a failed `fopen`/`fwrite`/`rename` | not provided, by design (**added in 0.18**, gr-dos/libc16#38) | send `errno` (as the POSIX build already does), or wrap those calls with own DOS calls; libc16 maps most codes to `EACCES`/`ENOENT`, so detail is lost. Note Watcom's `_doserrno` is already stale after a short `fwrite` (disk full is not a DOS error) |
 | `atol` | main: `PORT`/baud parsing | only `atoi`, `strtol` | `strtol(s, NULL, 10)` |
 | `<bios.h>`, `<i86.h>` | dosport, biosdisk | headers absent | include `<dos.h>` instead |
 | `<stdint.h>` | most headers | absent | `client/dos/include/stdint.h`, the exact-width types for Open Watcom's 16-bit targets |
-| `memchr` | tree: path splitting | missing (C89) | a local loop in `tree.c`; a candidate for libc16 |
+| `memchr` | tree: path splitting | missing (C89) | a local loop in `tree.c`; **added in 0.18** (gr-dos/libc16#39) |
 
 **Interface differences to handle:**
 
@@ -135,18 +137,29 @@ needs floating point.
 
 - **Formatting:** a local integer-and-string formatter in `client/dos/`
   (option B1), not libkitchen16.
-- **`_dos_setftime`:** a local inline 5701h call, opening the file read-only
-  so that read-only files can be stamped too (Watcom's build opened it
-  read-write, which failed on them). Requested upstream as
-  [gr-dos/libc16#37](https://github.com/gr-dos/libc16/issues/37); switch once
-  a release has it.
-- **`fs_error_code()`:** returns `errno`, as the POSIX build does. The host
-  only shows it (`code 0x....`), so this changes the number a user sees after
-  a failed upload, from a DOS error code to a Microsoft C `errno` value.
+- **`_dos_setftime`:** libc16's (0.18), opening the file read-only so that
+  read-only files can be stamped too (Watcom's build opened it read-write,
+  which failed on them; libc16's spec confirms 5701h needs no write access).
+  The time is set last, just before the close, as libc16 advises for
+  DOSBox-X. Until 0.18 this was a local inline 5701h call.
+- **`fs_error_code()`:** returns `_doserrno` (0.18), the DOS error code, as
+  the Watcom build did. Until 0.18 it returned `errno`.
+- **`memchr`:** libc16's (0.18). Until 0.18, `tree.c` had a local loop.
+
+## libc16 v0.18
+
+0.18 added `memchr` (gr-dos/libc16#39), `_doserrno` (#38) and
+`_dos_getftime`/`_dos_setftime` (#37) for this migration, and SPROCKET uses
+the first three, restoring its pre-migration calls. Nothing in SPROCKET reads a file's
+time from an open handle (`fs_stat` and the directory listing take it from
+`struct find_t`), so `_dos_getftime` has no caller. libc16's `_doserrno` is
+set only when a DOS call fails, as Watcom's was in effect: after an error
+the runtime finds itself (a short write's `ENOSPC`) it is stale, so the
+code sent to the host can be from an earlier failure, as before.
 
 ## Proposed additions to libc16
 
-Only `_dos_getftime`/`_dos_setftime` look worth upstreaming (Microsoft C
-interface, one DOS call each, clean-room from Ralf Brown's list).
+`_dos_getftime`/`_dos_setftime`, `_doserrno` and `memchr` were upstreamed
+in 0.18.
 `_bios_keybrd` is a candidate if a second consumer wants `<bios.h>`;
 otherwise keep it local. Everything else above is handled in `client/dos/`.
