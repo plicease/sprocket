@@ -12,6 +12,8 @@
 #               check that changing MAX_PAYLOAD rebuilds SPROCKET.EXE
 # make dosbox-fmt
 #               run the formatter's cases on DOS (DOSBox-X) against the host
+# make clean    remove build/
+# make help     print this list
 #
 # The DOS programs link libc16 (github.com/gr-dos/libc16), not Open Watcom's
 # C runtime. By default fetch-libc16 fetches the pinned release into
@@ -207,7 +209,11 @@ test: build/test_frame build/test_proto build/test_tree build/test_shell build/t
 clean:
 	rm -rf build
 
+# The target list at the top of this file.
+help:
+	@sed -n '3,/^#$$/s/^# //p' $(firstword $(MAKEFILE_LIST))
+
 FORCE:
 
 .PHONY: all bench check-map check-map-negative check-rebuild check-version dosbox-fmt host test \
-	clean FORCE
+	clean help FORCE
