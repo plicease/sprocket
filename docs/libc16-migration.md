@@ -79,7 +79,11 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
   `call _memcpy`, `_strlen` etc. instead of inline code (checked with `wdis`).
   None is on the per-byte receive path (`frame.c`, `port_get`); `proto.c`
   calls `memcpy` once per frame. Expect a size change and no timing change,
-  but BENCH will confirm.
+  but BENCH will confirm. It did, for the receive path: on the NuXT at 4.77
+  and 9.54 MHz, the per-byte time and frame check are the same as with
+  Watcom's runtime. The end of a frame is about 7.6% slower under DOSBox-X
+  (36.6 ms against 34.0 ms), most likely from that `memcpy`. See
+  [testing](testing.md#libc16-build-2026-11-20).
 - **Unbuffered streams.** libc16 streams start unbuffered; Watcom's are
   buffered. Uploads (`fwrite` of one DATA payload) and downloads (`fread`)
   already move a payload per call, so DOS call counts barely change. Console
