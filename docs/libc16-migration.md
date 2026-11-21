@@ -176,7 +176,11 @@ and it has no local copy loops left to replace. `SPROCKET.EXE` and
 34.0 ms, which is Watcom's runtime's figure, with the receive path and frame
 check unchanged. The host tests, the link-map checks and the DOSBox-X
 suites (`dosbox-hello.sh`, also with `FAULT=1`, `dosbox-tree.sh`,
-`dosbox-client.sh`, `dosbox-image.sh`, `make dosbox-fmt`) pass.
+`dosbox-client.sh`, `dosbox-image.sh`, `make dosbox-fmt`) pass. On the NuXT
+at 9.54 MHz, `BENCH`'s end of frame is 126.3 ms with 0.19, the same as with
+Watcom's runtime. Downloads are still 7 to 9% slower than with Watcom's
+runtime on the NuXT, though not under DOSBox-X; the cause is not yet known
+(see [testing](testing.md#libc16-build-2026-11-20)).
 
 ## Proposed additions to libc16
 
