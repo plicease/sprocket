@@ -18,3 +18,36 @@ jobs:
     with:
       publisher: "plicease"
 
+  # When `release` has made v<version>, SPROCKET.EXE for DOS is attached to
+  # it as sprocket.exe, built from the same commit with the pinned Open
+  # Watcom (client/dos/fetch-watcom), its version checked against
+  # Cargo.toml's. The asset's name and contents are a contract with GR-DOS,
+  # which ships it (client/dos/README.md, "Releases").
+  dos:
+    name: DOS client
+    needs: release
+    if: needs.release.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: client/dos
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the version
+        run: |
+          make check-version
+          test "$(make -s check-version)" = "SPROCKET.EXE version $VERSION"
+
+      - name: Build SPROCKET.EXE
+        run: |
+          make WATCOM="$(./fetch-watcom)"
+          cp build/SPROCKET.EXE build/sprocket.exe
+          sha256sum build/sprocket.exe
+
+      - name: Attach sprocket.exe to v${{ needs.release.outputs.version }}
+        run: gh release upload "v$VERSION" build/sprocket.exe --repo "$GITHUB_REPOSITORY" --clobber

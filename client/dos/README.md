@@ -59,7 +59,10 @@ make                 # build/SPROCKET.EXE: -bt=dos -ms -0 (8086, small model)
 make bench           # build/BENCH.EXE: times the receive path on the machine it runs on
 make test            # host tests against ../../tests/vectors/ and ../../tests/shell/
 make host            # build/sprocket-client, the same program on a Linux tty/PTY
+make check-version   # src/main.c's VERSION must be Cargo.toml's version
 ```
+
+`./fetch-watcom` downloads the Open Watcom snapshot that CI and the releases build with (`2026-10-01-Build`, checked by SHA-256) into `build/tools`, and prints its directory, so `make WATCOM=$(./fetch-watcom)` builds the same `SPROCKET.EXE`, byte for byte.
 
 `MAX_PAYLOAD=4090` (as in `make MAX_PAYLOAD=4090`) builds with the protocol's largest payload instead of 1024 bytes, so that a `STORAGE_READ` response carries seven sectors instead of one, for timing imaging on real hardware.
 
@@ -74,6 +77,12 @@ The build treats all warnings as errors and optimizes for speed (`-ox`) without 
 - **Real hardware:** on a NuXT (NEC V20) at 4.77 and 9.54 MHz, `sprocket hello --pings 20` ran clean at every baud rate `BENCH.EXE` marked as keeping up, and failed at the first rate it marked too slow. See [testing](../../docs/testing.md#real-hardware-nuxt-phaistos).
 - **86Box, IBM XT (8088, 4.77 MHz):** end to end, `sprocket hello` works through `test/pace-relay.py`, which paces the host's bytes like a real line; see [testing](../../docs/testing.md#86box-ibm-xt-8088-at-477-mhz) for the setup and its limits.
 
+## Releases
+
+Each release, from the first one made after this was added, has `SPROCKET.EXE` as the asset **`sprocket.exe`**, beside the host programs. The release workflow (`.github/workflows/release.yml`, job `dos`) builds it from the release's commit with the pinned Open Watcom, after `make check-version`, so the program reports the release's version. CI builds it the same way on every push and pull request (`.github/workflows/ci.yml`), checks that a second build is identical, and keeps it as the `SPROCKET.EXE` artifact.
+
+The asset is a contract with [GR-DOS](https://github.com/gr-dos/gr-dos), which can ship it in its full distribution as `C:\DOS\SPROCKET.EXE` (gr-dos/gr-dos#37). GR-DOS pins a release and checks the asset's name, size and SHA-256 (GitHub's digest), that it is a real-mode DOS `.EXE`, and the repository's license at the release's commit. So keep the name `sprocket.exe`, one DOS program per release, and an 8086 build.
+
 ## Licensing
 
-The source is MIT. The executable links Open Watcom's C runtime; check its redistribution terms before distributing binaries (see [licensing](../../docs/licensing.md)).
+The source is MIT. The executable links Open Watcom's C runtime (the file carries its banner, `Open Watcom C/C++16 Run-Time system`); check its redistribution terms before distributing binaries (see [licensing](../../docs/licensing.md)). The release asset `sprocket.exe` is such a binary, published from the first version bump after the `dos` release job was added, so those terms, and any notice they require with it, are to be settled before that bump.

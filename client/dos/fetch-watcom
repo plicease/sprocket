@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# Download and unpack the pinned Open Watcom 2.0 snapshot, for building
+# SPROCKET.EXE reproducibly (as CI and the release do). Prints the WATCOM
+# directory on stdout, for `make WATCOM=...`. Reuses an existing unpacked
+# copy, and checks the download's SHA-256 before using it.
+#
+# usage: client/dos/fetch-watcom [DESTDIR]   (default: client/dos/build/tools)
+
+set -eu
+
+release=2026-10-01-Build
+asset=ow-snapshot.tar.xz
+sha256=e6aa1b1e40ac8bbf97658d2c70fff8a4242d6ca4a1c60806f2baa5317083d4fe
+url="https://github.com/open-watcom/open-watcom-v2/releases/download/$release/$asset"
+
+here=$(cd "$(dirname "$0")" && pwd)
+dest=${1:-"$here/build/tools"}
+watcom="$dest/watcom-$release"
+
+if [ ! -x "$watcom/binl64/wcl" ]; then
+  mkdir -p "$dest"
+  tarball="$dest/$asset"
+  if ! echo "$sha256  $tarball" | sha256sum -c --status 2>/dev/null; then
+    curl -fsSL -o "$tarball" "$url"
+    echo "$sha256  $tarball" | sha256sum -c --quiet
+  fi
+  rm -rf "$watcom.tmp"
+  mkdir -p "$watcom.tmp"
+  tar -xJf "$tarball" -C "$watcom.tmp"
+  mv "$watcom.tmp" "$watcom"
+fi
+
+echo "$watcom"
