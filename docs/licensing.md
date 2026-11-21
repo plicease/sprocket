@@ -41,7 +41,7 @@ The migration roughly halved `BENCH.EXE`. Measured on a NuXT (NEC V20) at 4.77 a
 
 - **Sizes:** `SPROCKET.EXE` is 32,678 bytes, against 45,944 with Open Watcom's runtime. `BENCH.EXE` is 6,414 bytes, against 13,538.
 - **Speed:** the serial receive path is unchanged, and so are the highest reliable baud rates (38400 at 4.77 MHz, 57600 at 9.54 MHz).
-- **Cost:** with libc16 0.18, the end of a frame was about 8.7% slower, because its `memcpy` copied a byte at a time. 0.19 copies a word at a time (gr-dos/libc16#42), and the end of a frame now takes as long as with Open Watcom's runtime, both under DOSBox-X and on the NuXT at 9.54 MHz. Downloads to the NuXT were then still 7 to 9% slower, because libc16's unbuffered `fwrite` handed DOS writes that were not whole sectors. `src/wbuf.c` now gathers them into whole 4 KB blocks, and a build doing that downloads slightly faster than with Open Watcom's runtime (see [testing](testing.md#libc16-build-2026-11-20)).
+- **Cost:** with libc16 0.18, the end of a frame was about 8.7% slower, because its `memcpy` copied a byte at a time. 0.19 copies a word at a time (gr-dos/libc16#42), and the end of a frame now takes as long as with Open Watcom's runtime, both under DOSBox-X and on the NuXT at 9.54 MHz. Downloads to the NuXT were then still 7 to 9% slower, because libc16's unbuffered `fwrite` handed DOS writes that were not whole sectors. `src/wbuf.c` now gathers them into whole 4 KB blocks, and with it SPROCKET downloads 1.7% faster than with Open Watcom's runtime on the NuXT (see [testing](testing.md#libc16-build-2026-11-20)).
 
 ## Other toolchains
 

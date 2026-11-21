@@ -96,7 +96,9 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
   buffers. Watcom's buffer had kept the writes whole and sector-aligned. On
   the NuXT at 9.54 MHz this cost about 24 ms a request, 8% of a download
   (see [testing](testing.md#libc16-build-2026-11-20)). `src/wbuf.c` now
-  gathers a received file's writes, in both roles, into whole 4 KB blocks.
+  gathers a received file's writes, in both roles, into whole 4 KB blocks;
+  on the NuXT a download then takes 35.1 s against Open Watcom's 35.7 s.
+  Aligned buffered writes are requested upstream as gr-dos/libc16#45.
   Console output would suffer if each character were written alone; but
   the local `printf` hands each message to `fwrite` in 64-byte blocks, and
   the only other console output is `putchar` echoing a key. Still no
