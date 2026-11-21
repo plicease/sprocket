@@ -52,7 +52,7 @@ The baud rate defaults to the `SPROCKET_BAUD` environment variable if it is set 
 
 ## Building
 
-Needs GNU make, curl, unzip, xz and a host C compiler; the first `make` fetches the rest. The DOS programs link [libc16](https://github.com/gr-dos/libc16), an MIT-licensed C runtime for 16-bit DOS, instead of Open Watcom's: `./fetch-libc16` downloads the pinned release (0.18, checked by SHA-256) into `build/libc16`, and that release's `tools/fetch-watcom` the Open Watcom snapshot it was built with into `build/tools`. `LIBC16_ROOT=dir` builds against another libc16 tree (a release, or a checkout built with its `make`), and `WATCOM=dir` with another Open Watcom.
+Needs GNU make, curl, unzip, xz and a host C compiler; the first `make` fetches the rest. The DOS programs link [libc16](https://github.com/gr-dos/libc16), an MIT-licensed C runtime for 16-bit DOS, instead of Open Watcom's: `./fetch-libc16` downloads the pinned release (0.19, checked by SHA-256) into `build/libc16`, and that release's `tools/fetch-watcom` the Open Watcom snapshot it was built with into `build/tools`. `LIBC16_ROOT=dir` builds against another libc16 tree (a release, or a checkout built with its `make`), and `WATCOM=dir` with another Open Watcom.
 
 ```sh
 make                 # build/SPROCKET.EXE: -bt=dos -ms -0 (8086, small model), with libc16

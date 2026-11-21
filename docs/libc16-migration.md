@@ -3,8 +3,9 @@
 Issue [#27](https://github.com/plicease/sprocket/issues/27), task 1: what
 `SPROCKET.EXE` and `BENCH.EXE` take from a C runtime, and how that compares
 with [libc16](https://github.com/gr-dos/libc16) **v0.17** (latest, 2026-11-19).
-The build now pins **v0.18**, which added three of the gaps found here; see
-"libc16 v0.18" below.
+The build now pins **v0.19**. 0.18 added three of the gaps found here, and
+0.19 made the copies and fills fast; see "libc16 v0.18" and "libc16 v0.19"
+below.
 
 ## Method
 
@@ -83,7 +84,9 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
   and 9.54 MHz, the per-byte time and frame check are the same as with
   Watcom's runtime. The end of a frame (CRC, handling, encoding a PING's
   response) is about 8.7% slower: 137.3 ms against 126.3 ms at 9.54 MHz,
-  and 277.3 against 255.4 ms at 4.77 MHz, most likely from that `memcpy`. See
+  and 277.3 against 255.4 ms at 4.77 MHz. That was 0.18's `memcpy`, a byte
+  loop in C; 0.19 copies a word at a time (gr-dos/libc16#42), and the end of
+  a frame takes the same time as with Watcom's runtime under DOSBox-X. See
   [testing](testing.md#libc16-build-2026-11-20).
 - **Unbuffered streams.** libc16 streams start unbuffered; Watcom's are
   buffered. Uploads (`fwrite` of one DATA payload) and downloads (`fread`)
@@ -162,9 +165,22 @@ set only when a DOS call fails, as Watcom's was in effect: after an error
 the runtime finds itself (a short write's `ENOSPC`) it is stale, so the
 code sent to the host can be from an earlier failure, as before.
 
+## libc16 v0.19
+
+0.19 replaced 0.18's byte loops in C for `memcpy`, `memmove`, `memset` and
+`_fmemcpy` with `rep movsw` / `rep stosw` (gr-dos/libc16#42, #43), at
+SPROCKET's request. No SPROCKET source changes: its calls are unchanged,
+and it has no local copy loops left to replace. `SPROCKET.EXE` and
+`BENCH.EXE` keep their sizes (32,678 and 6,414 bytes). Under DOSBox-X
+(8086, `cycles=fixed 3000`), `BENCH`'s end of frame drops from 36.6 to
+34.0 ms, which is Watcom's runtime's figure, with the receive path and frame
+check unchanged. The host tests, the link-map checks and the DOSBox-X
+suites (`dosbox-hello.sh`, also with `FAULT=1`, `dosbox-tree.sh`,
+`dosbox-client.sh`, `dosbox-image.sh`, `make dosbox-fmt`) pass.
+
 ## Proposed additions to libc16
 
 `_dos_getftime`/`_dos_setftime`, `_doserrno` and `memchr` were upstreamed
-in 0.18.
+in 0.18, and word-at-a-time copies and fills in 0.19.
 `_bios_keybrd` is a candidate if a second consumer wants `<bios.h>`;
 otherwise keep it local. Everything else above is handled in `client/dos/`.

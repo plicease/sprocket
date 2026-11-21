@@ -20,7 +20,7 @@ Prefer permissive dependencies where practical. Record incorporated third-party 
 
 `SPROCKET.EXE` and `BENCH.EXE` link no Open Watcom runtime or startup code. Their C runtime is [libc16](https://github.com/gr-dos/libc16) (issue #27):
 
-- **Release:** libc16 0.18, the small-model library `LIBC16.LIB`. `client/dos/fetch-libc16` pins the release archive by SHA-256 (`6656b488…b207`) and refuses any other.
+- **Release:** libc16 0.19, the small-model library `LIBC16.LIB`. `client/dos/fetch-libc16` pins the release archive by SHA-256 (`7035f1f7…978b`) and refuses any other.
 - **License:** MIT, `Copyright (c) 2026 Graham Ollis`: the same text and holder as SPROCKET's own `LICENSE`. libc16 is written independently, not derived from Open Watcom's runtime. What SPROCKET needed and libc16 lacked was added upstream to libc16 (gr-dos/libc16#37, #38, #39) or written in `client/dos/` (the `printf` family in `src/dosfmt.c`, the UART and BIOS keyboard as inline `#pragma aux` code, `include/stdint.h`). See [the migration inventory](libc16-migration.md).
 - **What the executables contain:** SPROCKET's own objects, and the libc16 members they use, including the startup code and the compiler's helper routines (`__U4D`, `__U4M` and so on), which libc16 provides.
 - **Notice:** MIT requires the copyright and permission notice with copies of the software, and the executables contain a substantial part of libc16. Anyone redistributing `SPROCKET.EXE` (the release asset `sprocket.exe`, or GR-DOS as `C:\DOS\SPROCKET.EXE`) must include the notice. One copy of the root `LICENSE` covers both SPROCKET and libc16, as long as both keep the same holder and text. Each release attaches that copy beside `sprocket.exe`, as the asset `sprocket-exe-license.txt`. Before uploading, the release job checks that the root `LICENSE` and the pinned libc16's `LICENSE` are identical, and fails if they are not. If they ever differ, ship libc16's notice as well and update this section. GR-DOS, which ships `sprocket.exe` as `C:\DOS\SPROCKET.EXE`, must ship the notice with it.
@@ -33,7 +33,7 @@ Prefer permissive dependencies where practical. Record incorporated third-party 
 
 ### Toolchain
 
-Open Watcom is still the compiler and linker: the `2026-10-01-Build` snapshot that libc16 0.18 pins, fetched by `client/dos/fetch-watcom` and checked by SHA-256. Using a compiler does not impose its license on the source it compiles, and with the checks above no Open Watcom runtime code reaches the executables. So the terms of the Sybase Open Watcom Public License for redistributing runtime code are not in play. JWasm builds libc16, but not SPROCKET.
+Open Watcom is still the compiler and linker: the `2026-10-01-Build` snapshot that libc16 0.19 pins, fetched by `client/dos/fetch-watcom` and checked by SHA-256. Using a compiler does not impose its license on the source it compiles, and with the checks above no Open Watcom runtime code reaches the executables. So the terms of the Sybase Open Watcom Public License for redistributing runtime code are not in play. JWasm builds libc16, but not SPROCKET.
 
 ### Tradeoffs measured
 
@@ -41,7 +41,7 @@ The migration roughly halved `BENCH.EXE`. Measured on a NuXT (NEC V20) at 4.77 a
 
 - **Sizes:** `SPROCKET.EXE` is 32,678 bytes, against 45,944 with Open Watcom's runtime. `BENCH.EXE` is 6,414 bytes, against 13,538.
 - **Speed:** the serial receive path is unchanged, and so are the highest reliable baud rates (38400 at 4.77 MHz, 57600 at 9.54 MHz).
-- **Cost:** the end of a frame is about 8.7% slower, because libc16 0.18's `memcpy` copies a byte at a time (gr-dos/libc16#42).
+- **Cost:** with libc16 0.18, the end of a frame was about 8.7% slower, because its `memcpy` copied a byte at a time. 0.19 copies a word at a time (gr-dos/libc16#42), and under DOSBox-X the end of a frame now takes as long as with Open Watcom's runtime.
 
 ## Other toolchains
 
