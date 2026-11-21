@@ -24,10 +24,15 @@ jobs:
   # its version checked against Cargo.toml's, with its license notice as
   # sprocket-exe-license.txt. The asset's name and contents are a contract with GR-DOS,
   # which ships it (client/dos/README.md, "Releases").
+  #
+  # It does not wait on every host build: `release` fails when any one of
+  # them does (v0.5.0's aarch64-apple-darwin runner was refused), and that
+  # left v0.5.0 without sprocket.exe. So it runs unless the run was
+  # cancelled, whenever the version changed and the release was tagged.
   dos:
     name: DOS client
     needs: release
-    if: needs.release.outputs.changed == 'true'
+    if: ${{ !cancelled() && needs.release.outputs.changed == 'true' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
