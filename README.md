@@ -1,8 +1,20 @@
-# SPROCKET — Serial Protocol Rocket
+# SPROCKET
+
+**SPROCKET**: Serial Port Rocket, Serial Protocol Rocket, or Serial Program Rocket, depending on whether you're talking about the port, the protocol, or the program.
 
 SPROCKET is a cross-platform serial file-transfer, deployment, and disk-imaging project for vintage computers. A modern host performs complex operations; small platform-specific clients provide access to vintage hardware.
 
 **Status (2026-10-23):** in development. The standard-protocol modes (`sprocket send`, `sprocket serve`) are implemented and validated on real hardware. Native protocol v1 is ratified; its Milestone 2 handshake is implemented on the host and in the DOS program, tested in emulators, and validated on a NuXT (NEC V20) at up to 57600 baud. Native file transfer (protocol v1.1, ratified) is implemented in both directions and either role on Linux and DOS, and tested on Linux, in DOSBox-X, and on a NuXT at 57600 baud. Disk imaging (Milestone 4) is implemented on the host and in the DOS program and tested in DOSBox-X, but not yet on real hardware. See [validation status](#validation-status) and the [roadmap](docs/roadmap.md).
+
+## The name
+
+All three readings are meant; none is the official one.
+
+- **Port:** the serial port at each end, such as `/dev/ttyS0` on Linux or `COM1` on DOS and Windows, joined by a null-modem cable.
+- **Protocol:** the native wire protocol, [protocol v1](docs/protocol-v1.md) and [v1.1](docs/protocol-v1.1.md): the frames the two ends exchange over that port.
+- **Program:** the programs that speak the protocol: `sprocket` on the modern host (Linux or Windows), and `SPROCKET.EXE` on DOS.
+
+As with FTP, one name covers the protocol and the programs, and the context says which is meant. These docs write SPROCKET for the project and the protocol, and `sprocket` or `SPROCKET.EXE` for a particular program. The name changes nothing on the wire or the command line: the commands, executables and protocol identifiers are as they always were.
 
 ## Design documents
 

@@ -1,6 +1,6 @@
 # SPROCKET for DOS
 
-`SPROCKET.EXE`, the native-protocol program for real-mode DOS on 8086/8088 and later CPUs, built with Open Watcom. It implements [protocol v1](../../docs/protocol-v1.md) (`HELLO`, `PING` and `CLOSE`, with the duplicate-request rules) and the file trees of [protocol v1.1](../../docs/protocol-v1.1.md), in either role: as the server that shares a directory, or as the client that browses one and copies files. As a server it can also offer the machine's BIOS disks for imaging with `sprocket image` (Milestone 4).
+`SPROCKET.EXE` is the SPROCKET program for real-mode DOS on 8086/8088 and later CPUs, built with Open Watcom. It speaks the SPROCKET protocol over a PC serial port, `COM1` by default (the program, protocol and port of [the name](../../README.md#the-name)). It implements [protocol v1](../../docs/protocol-v1.md) (`HELLO`, `PING` and `CLOSE`, with the duplicate-request rules) and the file trees of [protocol v1.1](../../docs/protocol-v1.1.md), in either role: as the server that shares a directory, or as the client that browses one and copies files. As a server it can also offer the machine's BIOS disks for imaging with `sprocket image` (Milestone 4).
 
 ```text
 SPROCKET CLIENT [port [baud]]                      default: COM1 9600
