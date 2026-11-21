@@ -1,5 +1,7 @@
 # Native wire protocol
 
+This is the SPROCKET protocol: the frames exchanged over a serial port between two SPROCKET programs, such as `sprocket` on a Linux host and `SPROCKET.EXE` on DOS. It belongs to neither program, and any program that speaks it can talk to any other ([the name](../README.md#the-name)).
+
 **Status:** Requirements for the native protocol. The wire specification that meets them is [protocol v1](protocol-v1.md), **ratified on 2026-10-21**; implement against that document. Where this document describes a design choice in general terms, protocol v1 is authoritative.
 
 ## Requirements
