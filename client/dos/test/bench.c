@@ -39,6 +39,11 @@ static uint16_t wire_len;
 static uint8_t rx_buf[PAYLOAD + FRAME_HEADER_LEN + FRAME_CRC_LEN];
 static uint8_t resp_buf[PAYLOAD + FRAME_HEADER_LEN];
 static uint8_t body[PAYLOAD + FRAME_HEADER_LEN];
+/* HELLO for the PING's session (0x5A3C): magic, version 1.0, max payload. */
+static const uint8_t hello[FRAME_HEADER_LEN + 8] = {
+    MSG_HELLO, 0x3C, 0x5A, 0, 'S', 'P', 'R', 'K', PROTO_MAJOR, 0,
+    PAYLOAD & 0xFF, PAYLOAD >> 8
+};
 
 static void collect(uint8_t byte)
 {
@@ -134,12 +139,31 @@ int main(int argc, char **argv)
     cl.platform = PLATFORM_DOS;
     cl.version = "bench";
     client_init(&cl, resp_buf);
+    /*
+     * A PING is answered only within a session, so open one first with
+     * the PING's session number. Without this client_handle drops every
+     * PING and leaves out and out_len unset, and the loop would time the
+     * encoding of whatever they happen to hold.
+     */
+    if (client_handle(&cl, hello, sizeof hello, 0, &out, &out_len) == 0
+        || out[0] != (MSG_HELLO | MSG_RESPONSE)) {
+        printf("BENCH: HELLO was not accepted\n");
+        port_close();
+        return 1;
+    }
     start = tick_edge();
     for (f = 0; f < FRAMES || port_ticks() - start < MIN_TICKS; f++) {
-        /* The CRC check at the end of a frame, then the response. */
+        /* The CRC check at the end of a frame, then the response. The
+         * sequence number and CRC change each time, so no PING is taken
+         * for a retransmission. */
         (void)crc16(body, sizeof body);
-        body[3] = (uint8_t)f;
-        (void)client_handle(&cl, body, sizeof body, (uint16_t)f, &out, &out_len);
+        body[3] = (uint8_t)(f + 1);
+        if (client_handle(&cl, body, sizeof body, (uint16_t)(f + 1), &out, &out_len) == 0
+            || out_len != sizeof body || out[0] != (MSG_PING | MSG_RESPONSE)) {
+            printf("BENCH: PING was not answered\n");
+            port_close();
+            return 1;
+        }
         frame_send(out, out_len, discard);
     }
     ticks = port_ticks() - start;

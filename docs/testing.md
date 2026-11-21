@@ -115,8 +115,10 @@ Run on 2026-10-23: `phaistos`, a NuXT with an NEC V20 switchable between 4.77 an
 
 | Clock | Receive path, per byte | Frame check (1 KB CRC) | End of frame | 9600 | 19200 | 38400 | 57600 | 115200 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 4.77 MHz | 187.4 µs | 104.3 ms | 252.6 ms | 5.5× | 2.7× | 1.3× | too slow (0.9×) | too slow (0.4×) |
-| 9.54 MHz | 92.5 µs | 52.0 ms | 126.3 ms | 11.2× | 5.6× | 2.8× | 1.8× | too slow (0.9×) |
+| 4.77 MHz | 187.4 µs | 104.3 ms | (252.6 ms) | 5.5× | 2.7× | 1.3× | too slow (0.9×) | too slow (0.4×) |
+| 9.54 MHz | 92.5 µs | 52.0 ms | (126.3 ms) | 11.2× | 5.6× | 2.8× | 1.8× | too slow (0.9×) |
+
+The end-of-frame figures are not valid. That `BENCH` never opened a session, so the client dropped every PING, and the loop timed the CRC check plus encoding whatever `out` and `out_len` were left holding on the stack (see [the libc16 build](#libc16-build-2026-11-20)).
 
 **End to end.**
 
@@ -137,6 +139,57 @@ Each ping's time is the two frames on the wire (about 2080 bytes) plus the clien
 **What this changed.** The first `BENCH` timed whole frames and spread each frame's CRC check over every byte, reporting 282 µs per byte at 4.77 MHz (139 µs at 9.54 MHz) and predicting failure at 38400. The 38400 run at 4.77 MHz was clean, and the 57600 run failed, which put the real cost between 173 and 260 µs. The check runs at the closing flag, after the last byte, so it never competes with incoming bytes. `BENCH` now times it separately and leaves it out of the per-byte figure (187.4 + 104.3 ms ÷ 1040 bytes ≈ 288 µs, matching the old figure within timer resolution). It also repeats each test for at least two seconds, so fast machines get a figure: on `smokey` (P75) the old version finished within one timer tick and reported nothing.
 
 **File transfer.** Run on 2026-10-23 with version 0.3.0 at 57600 baud, the NuXT at 9.54 MHz, over the same cable: `twintwist` and `phaistos` each as client (`sprocket client`, `SPROCKET CLIENT`) and as server (`sprocket serve --writable`, `SPROCKET SERVER ... /W`). In each pairing, files were fetched with `get` and sent with `put`, the largest 153,744 bytes in both directions, along with smaller files, and existing files were replaced with `-f`. `SPROCKET SERVER` served a non-root directory (issue #18). `ls` of `C:\DOS`, where the slow listings of issue #19 were first seen, was much faster than with 0.2.2; it was not timed. `SPROCKET.EXE` on `phaistos`, while running as the server, was replaced with `put -f`; the running program carried on. An interrupted replacement left the old file intact (checked with `FC /B`) and no `$$$` file behind.
+
+#### libc16 build (2026-11-20)
+
+`SPROCKET.EXE` (32,678 bytes) and `BENCH.EXE` (6,262 bytes) linked with libc16 0.18 (issue #27, PR #28), on the same NuXT. These results were reported in PR #28's comments, transcribed from photos of the DOS screen. They are compared with an earlier build linked with Open Watcom's runtime (`SPROCKET.EXE` 41,768 bytes, `BENCH.EXE` 12,788 bytes), run on the same machine.
+
+| Clock | Build | Ticks (20,800 bytes) | Receive path, per byte | Frame check | 9600 | 19200 | 38400 | 57600 | 115200 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4.77 MHz | Open Watcom runtime | 109 | 187.4 µs | 104.3 ms | 5.5× | 2.7× | 1.3× | too slow (0.9×) | too slow (0.4×) |
+| 4.77 MHz | libc16 | 108 | 184.8 µs | 104.3 ms | 5.6× | 2.8× | 1.4× | too slow (0.9×) | too slow (0.4×) |
+| 9.54 MHz | Open Watcom runtime | 54 | 92.5 µs | 52.0 ms | 11.2× | 5.6× | 2.8× | 1.8× | too slow (0.9×) |
+| 9.54 MHz | libc16 | 54 | 92.5 µs | 52.0 ms | 11.2× | 5.6× | 2.8× | 1.8× | too slow (0.9×) |
+
+The receive path and frame check are unchanged. At 4.77 MHz the two runs differ by one tick in 109, which is within the BIOS timer's resolution. The time-critical loop did not regress, as expected, since no libc16 code runs per byte.
+
+The end-of-frame figures from these runs are not valid: 252.6 and 126.3 ms on the old build, and about 7.1 and 3.8 ms on libc16. The libc16 pair is shorter even than the CRC check that each iteration runs. Both builds dropped every PING (see above), so the figure depended on leftover stack contents, which differ between the runtimes. Under DOSBox-X (8086, `cycles=fixed 3000`), the same two `BENCH.EXE`s give identical receive-path and frame-check figures. Their end-of-frame figures are 33.5 ms (old) and 13.8 ms (libc16). 13.8 ms is exactly the CRC check, so the libc16 build encoded nothing. The old build happened to encode about as much as a real response: its fixed figures below are within 3% of the invalid ones.
+
+`BENCH` now opens a session with a HELLO, and stops if a PING is not answered. The fixed `BENCH.EXE` (libc16, 6,414 bytes) was run on the NuXT, along with the same source linked with Open Watcom's runtime (`BENCHOW.EXE`, 13,538 bytes, built from `main` with the fix). Their receive path and frame check are as in the table above. The end of frame (CRC check, handling the PING, encoding the response):
+
+| Clock | Open Watcom runtime | libc16 0.18 | Difference |
+| --- | --- | --- | --- |
+| 4.77 MHz | 255.4 ms | 277.3 ms | +21.9 ms (+8.6%) |
+| 9.54 MHz | 126.3 ms | 137.3 ms | +11.0 ms (+8.7%) |
+| DOSBox-X, `cycles=fixed 3000` | 34.0 ms | 36.6 ms | +2.6 ms (+7.6%) |
+
+libc16 0.18 is consistently slower here because of `proto.c`'s `memcpy` of the 1 KB PING payload. Open Watcom inlines it as `rep movs`, and 0.18's `memcpy` was a byte loop in C. Under DOSBox-X, replacing only that call with an inline `rep movsw` gave 34.0 ms, the Open Watcom runtime's figure. libc16 0.19 copies a word at a time (gr-dos/libc16#42). Built with it, `BENCH.EXE` (still 6,414 bytes) also gives 34.0 ms under DOSBox-X, with the receive path and frame check unchanged. On the NuXT at 9.54 MHz, `BENCH.EXE` with 0.19 also gives 126.3 ms, the same as `BENCHOW.EXE` at that clock, with 54 ticks, 92.5 µs per byte and a 52.0 ms frame check. 0.19 has not been timed at 4.77 MHz. At about 2.6 times the frame check, most of the end of frame is two CRC passes, one over the request and one over the response as it is encoded. Those are the same in both builds. This work happens after the closing flag, while the line is idle, so it adds to each request's turnaround and does not limit the baud rate. The BIOS timer's 55 ms tick, averaged over 36 ticks or more per test, limits each figure to about ±3%.
+
+**End to end, libc16 build.** At 9.54 MHz and 57600 baud (`SPROCKET_BAUD=57600`), `SPROCKET CLIENT` fetched the `*16` program binaries from the host, including `tico16`. Every file's CRC check reported `OK`: `cat.exe`, `crcsum.com`/`.exe`, `df.exe`, `diff.exe`, `gzip.exe`, `hello.com`/`.exe`, `less.exe`, `ls.exe`, `md5sum.exe`, `patch.exe`, `retrofetch.exe`, `tar.exe`, `tcl.exe`, `term16.exe`, `tico.exe`, `truncate.com`/`.exe`, `uname.com`, `unzip.exe` and `which.com`/`.exe`. At 4.77 MHz and 38400 baud, 25 files were transferred, and all passed their CRC checks. These are the fastest rates `BENCH` marks as keeping up at each clock, and the same limits as the earlier `hello` runs. The next rate up failed at each clock, as `BENCH` predicts (0.9× in both cases): 57600 baud at 4.77 MHz, and 115200 at 9.54 MHz. At 115200, `SPROCKET CLIENT` connected to `sprocket` 0.4.0 on the host (protocol 1.1), and `dir` worked. Then `get sprocket.exe` (32 KB) failed with `SPROCKET.EXE: no response from the server` and `Connection lost: no response from the server`. The 57600 run at 4.77 MHz failed the same way. Unlike the earlier `hello` runs at 115200, where not even `HELLO` got through, the short frames of the handshake and listing survived, and the first full 1 KB data frames did not. Which byte or frame was lost was not isolated. 
+
+**Throughput, libc16 0.19 against Open Watcom's runtime.** Run on 2026-11-20 and reported on gr-dos/libc16#43. `SPROCKET.EXE` 0.4.0 was built two ways from the same source: with libc16 0.19 (`SPROCK19.EXE`, 32,678 bytes) and with Open Watcom's runtime (`SPROCKOW.EXE`, 45,944 bytes). Each fetched the same 131,072-byte `TEST.BIN` twice with `get -f`, from `sprocket serve --writable` 0.4.0 on `twintwist`, with the progress shown on the screen:
+
+| Clock, baud | Open Watcom runtime | libc16 0.19 | Difference in mean time |
+| --- | --- | --- | --- |
+| 9.54 MHz, 57600 | 36.3 s, 36.2 s (3.5 kB/s) | 39.4 s, 39.5 s (3.2 kB/s) | +3.2 s (+8.8%) |
+| 4.77 MHz, 38400 | 57.9 s, 57.9 s (2.2 kB/s) | 63.9 s, 60.2 s (2.0, 2.1 kB/s) | +4.2 s (+7.2%) |
+
+All the transfers completed. Downloads are still slower with libc16, even though `BENCH`'s end of frame now matches: about 25 ms more per 1 KB request at 9.54 MHz, and about 18 to 47 ms at 4.77 MHz. The gap does not double when the clock halves, so it is probably not CPU work. Under DOSBox-X (8086, `cycles=fixed 3000`, 38400 baud), the two builds take the same time: 35.4 s for each `get` of the same file, and 39.1 against 39.2 s for a `put`. That holds both with output redirected to a file and with it on the screen, timed from the host's trace (35.1 s each). DOSBox-X's disk is effectively instant, and its `cycles=fixed` counts instructions without modelling what each one costs on a real 8088 or V20 (a `DIV` costs the same as a `MOV`), so it hides differences in disk time and in CPU time alike. Both builds make one DOS write per 1 KB payload (libc16's `fwrite` on an unbuffered binary stream is one INT 21h 40h call) and one per progress message.
+
+The screen is not the cause. Run again at 9.54 MHz and 57600 baud with output redirected to files (`SPROCK19 CLIENT COM1 57600 < CMDS.TXT > L19.TXT`), two `get -f` of the same file took 35.8 and 36.0 s with Open Watcom's runtime, and 38.9 and 39.1 s with libc16 0.19, a gap of 3.1 s (+8.6%). Both builds were a little faster than with output on the screen.
+
+**Cause: unaligned writes.** Profiling builds timed each part of the download loop with the 8253 timer (channel 0 in mode 2, about 0.84 µs resolution), at 9.54 MHz and 57600 baud with output redirected, two 128 KB downloads each. All times are per download:
+
+| Build | Download | Request and response | `fwrite` | Progress |
+| --- | --- | --- | --- | --- |
+| Open Watcom runtime | 35.8, 35.8 s | 32.6 s | 1.81, 1.78 s | 0.77 s |
+| libc16 0.19 | 39.0, 38.9 s | 32.6 s | 4.90, 4.91 s | 0.74 s |
+| libc16 0.19, writes from a buffer within one 64 KB DMA page | 39.1, 39.1 s | 32.6 s | 5.02, 5.02 s | |
+| libc16 0.19, file given a 4 KB buffer (`setvbuf`) | 35.2, 35.2 s | 32.6 s | 1.08, 1.10 s | |
+
+The whole gap is in `fwrite`. A download's payload is 1016 bytes (the 1 KB limit less the 8-byte header), and libc16's unbuffered `fwrite` passes each payload to DOS as one write. So almost every write starts and ends inside a 512-byte sector, and DOS merges those sectors through its own buffers. Open Watcom's runtime buffers 512 bytes, which keeps its writes whole and sector-aligned. The DMA page made no difference, and none of the writes crossed a 64 KB boundary. With a 4 KB buffer, the writes are whole and aligned, and the download is 0.6 s faster than with Open Watcom's runtime.
+
+`src/wbuf.c` now gathers a received file's writes into whole 4 KB blocks, in both roles: downloads in `SPROCKET CLIENT`, and uploads to `SPROCKET SERVER`. It makes `SPROCKET.EXE` 176 bytes larger (32,854 bytes), against about 1.9 KB for `setvbuf`, which links `malloc` and `free`. `test/test_wbuf.c` checks that only whole blocks reach the file before the end, and `dosbox-client.sh` and `dosbox-tree.sh` now move a 20,000-byte file in each direction. On the NuXT at 9.54 MHz and 57600 baud, with output redirected, the build with `wbuf.c` (commit 90357b4, SHA-256 `d302b2bc…5cb7`) downloaded the same 128 KB file in 35.1 and 35.1 s, against 35.7 and 35.7 s with Open Watcom's runtime in the same session: 0.6 s (1.7%) faster, where libc16 0.19 without it took about 39 s. Uploads to `SPROCKET SERVER` with `wbuf.c` have not been timed on the NuXT. Uploads (`put`) were not timed on the hardware.
 
 ### Real hardware: P75 (`smokey`)
 

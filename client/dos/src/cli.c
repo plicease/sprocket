@@ -16,7 +16,10 @@
 
 #ifdef __WATCOMC__
 #include <direct.h>
+/* libc16's signal takes a __cdecl handler. */
+#define HANDLER __cdecl
 #else
+#define HANDLER
 #include <unistd.h>
 #endif
 
@@ -28,6 +31,7 @@
 #include "proto.h"
 #include "req.h"
 #include "shell.h"
+#include "wbuf.h"
 
 #define HELLO_WAIT 60
 #define LINE_MAX 128
@@ -57,7 +61,7 @@ static char home[FS_PATH_MAX + 1];
 static char walk_path[FS_PATH_MAX + 1];
 static char walk_prefix[SHELL_PATH_MAX + 2];
 
-static void on_break(int sig)
+static void HANDLER on_break(int sig)
 {
     broken = 1;
     signal(sig, on_break);
@@ -739,6 +743,7 @@ static int receive(const char *rdir, const char *name, int force, const char *co
     uint8_t *p;
     int rc;
     int ok = 0;
+    int flushed;
 
     shell_ascii(name, shown, sizeof shown);
     if (strlen(name) > FS_NAME_MAX || !fs_name_ok(name)) {
@@ -764,6 +769,7 @@ static int receive(const char *rdir, const char *name, int force, const char *co
         printf("%s%s: cannot create %s (here)\n", count, shown, temp);
         return 0;
     }
+    wbuf_begin(out);
     progress_begin(count, "Receiving", name);
     for (;;) {
         if (stop()) {
@@ -791,7 +797,7 @@ static int receive(const char *rdir, const char *name, int force, const char *co
             printf("\n%s: the file changed on the server during the transfer\n", shown);
             break;
         }
-        if (fwrite(r + 8, 1, len - 8, out) != (size_t)(len - 8)) {
+        if (!wbuf_write(r + 8, (uint16_t)(len - 8))) {
             printf("\n%s: cannot write it (here)\n", shown);
             break;
         }
@@ -810,7 +816,9 @@ static int receive(const char *rdir, const char *name, int force, const char *co
             break;
         }
     }
-    if (fclose(out) != 0 && ok) {
+    /* The last block, then the file: either can fail with the disk full. */
+    flushed = wbuf_end();
+    if ((fclose(out) != 0 || !flushed) && ok) {
         printf("\n%s: cannot write it (here)\n", shown);
         ok = 0;
     }

@@ -14,6 +14,7 @@
 #include "fsys.h"
 #include "proto.h"
 #include "tree.h"
+#include "wbuf.h"
 
 #define MAX_TREE_PATH 127
 /* Bytes of an encoded entry besides its name. */
@@ -108,6 +109,7 @@ void tree_init(const char *dir, int allow_writes)
 void tree_reset(void)
 {
     if (up_file != NULL) {
+        wbuf_drop();
         fclose(up_file);
         up_file = NULL;
         remove(up_temp);
@@ -478,6 +480,7 @@ static int begin_request(const uint8_t *in, uint16_t in_len, uint8_t *out, uint8
         *code = fs_error_code();
         return fail(class, ERR_FILE_ERROR);
     }
+    wbuf_begin(up_file);
     up_next = 0;
     up_crc = CRC32_INIT;
     out[0] = found_bits;
@@ -492,7 +495,7 @@ static int data_request(const uint8_t *in, uint16_t in_len, uint8_t *class, uint
         || (uint32_t)n > up_size - up_next) {
         return fail(class, ERR_INVALID_REQUEST);
     }
-    if (fwrite(in + 4, 1, n, up_file) != n) {
+    if (!wbuf_write(in + 4, n)) {
         *code = fs_error_code();
         tree_reset();
         return fail(class, ERR_FILE_ERROR);
@@ -511,8 +514,9 @@ static int commit_request(const uint8_t *in, uint16_t in_len, uint8_t *out, uint
     if (up_file == NULL || in_len < 8) {
         return fail(class, ERR_INVALID_REQUEST);
     }
-    /* Closing flushes DOS's buffers to the disk. */
-    closed = fclose(up_file);
+    /* The last block, then the file; closing flushes DOS's buffers to the disk. */
+    closed = !wbuf_end();
+    closed |= fclose(up_file) != 0;
     up_file = NULL;
     if (closed != 0 || get32(in) != up_size || up_next != up_size || get32(in + 4) != crc) {
         remove(up_temp);

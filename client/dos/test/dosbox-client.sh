@@ -27,6 +27,9 @@ trap 'kill $dosbox $serve 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$wo
 mkdir -p "$work/c" "$work/srv/games" "$work/srv/docs"
 cp "$here/build/SPROCKET.EXE" "$work/c/"
 head -c 3000 /dev/urandom > "$work/srv/DATA.BIN"
+# Larger than several of the client's 4 KB write blocks (src/wbuf.c), and
+# not a multiple of one.
+head -c 20000 /dev/urandom > "$work/srv/BIG.BIN"
 touch -d '2001-02-03 04:05:06' "$work/srv/DATA.BIN"
 printf 'a' > "$work/srv/games/a.exe"
 printf 'bb' > "$work/srv/games/b.exe"
@@ -34,7 +37,7 @@ printf 'not this' > "$work/srv/games/c.txt"
 printf 'long' > "$work/srv/docs/a-long-name.txt"
 printf 'uploaded\r\n' > "$work/c/UP.TXT"
 printf 'old\r\n' > "$work/c/A.EXE"
-printf '%s\r\n' 'ls -R' 'get data.bin' 'cd games' 'get *.exe' 'get -f *.exe' \
+printf '%s\r\n' 'ls -R' 'get data.bin' 'get big.bin' 'cd games' 'get *.exe' 'get -f *.exe' \
     'cd /docs' 'get a-long-name.txt' 'cd ..' 'put up.txt' 'put up.txt' 'lls' \
     'quit' > "$work/c/CMDS.TXT"
 
@@ -95,6 +98,7 @@ grep -q "Connected to SPROCKET .* on Linux, protocol 1.1, writable" "$out" ||
     fail "no session"
 grep -q "games/b.exe" "$out" || fail "ls -R did not list games/b.exe"
 cmp -s "$work/srv/DATA.BIN" "$work/c/DATA.BIN" || fail "DATA.BIN differs"
+cmp -s "$work/srv/BIG.BIN" "$work/c/BIG.BIN" || fail "BIG.BIN differs"
 [ "$(date -r "$work/c/DATA.BIN" +%s)" = "$(date -r "$work/srv/DATA.BIN" +%s)" ] ||
     fail "DATA.BIN does not have the server's date"
 grep -q "a.exe: File exists; use get -f to replace it" "$out" ||

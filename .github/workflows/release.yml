@@ -19,9 +19,10 @@ jobs:
       publisher: "plicease"
 
   # When `release` has made v<version>, SPROCKET.EXE for DOS is attached to
-  # it as sprocket.exe, built from the same commit with the pinned Open
-  # Watcom (client/dos/fetch-watcom), its version checked against
-  # Cargo.toml's. The asset's name and contents are a contract with GR-DOS,
+  # it as sprocket.exe, built from the same commit with the pinned libc16
+  # and the Open Watcom it names (client/dos/fetch-libc16, fetch-watcom),
+  # its version checked against Cargo.toml's, with its license notice as
+  # sprocket-exe-license.txt. The asset's name and contents are a contract with GR-DOS,
   # which ships it (client/dos/README.md, "Releases").
   dos:
     name: DOS client
@@ -45,9 +46,21 @@ jobs:
 
       - name: Build SPROCKET.EXE
         run: |
-          make WATCOM="$(./fetch-watcom)"
+          watcom=$(./fetch-watcom)
+          make WATCOM="$watcom"
+          make WATCOM="$watcom" check-map
           cp build/SPROCKET.EXE build/sprocket.exe
           sha256sum build/sprocket.exe
 
-      - name: Attach sprocket.exe to v${{ needs.release.outputs.version }}
-        run: gh release upload "v$VERSION" build/sprocket.exe --repo "$GITHUB_REPOSITORY" --clobber
+      # The executable contains libc16, so its MIT notice goes with it. One
+      # notice covers both while SPROCKET's LICENSE and libc16's have the
+      # same text and holder; the check fails the release if they diverge
+      # (docs/licensing.md, "DOS client runtime").
+      - name: Check that LICENSE covers libc16
+        run: cmp ../../LICENSE build/libc16/LICENSE
+
+      - name: Attach sprocket.exe and its license to v${{ needs.release.outputs.version }}
+        run: |
+          cp ../../LICENSE build/sprocket-exe-license.txt
+          gh release upload "v$VERSION" build/sprocket.exe build/sprocket-exe-license.txt \
+            --repo "$GITHUB_REPOSITORY" --clobber

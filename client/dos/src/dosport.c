@@ -5,9 +5,7 @@
  * needed. This works because the host sends one request at a time and
  * waits: while the client is busy, the line is silent.
  */
-#include <bios.h>
-#include <conio.h>
-#include <i86.h>
+#include <dos.h>
 #include <io.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +33,43 @@
 #define LSR_TEMT 0x40   /* transmitter completely empty */
 
 #define UART_CLOCK 115200L
+
+/*
+ * Port I/O, inline: a call per UART access would slow the receive path,
+ * which polls the line status for every byte. libc16 has no inp or outp.
+ */
+static unsigned char in_byte(unsigned port);
+#pragma aux in_byte = \
+    "in al, dx" \
+    parm [dx] value [al] modify exact [al];
+
+static void out_byte(unsigned port, unsigned char value);
+#pragma aux out_byte = \
+    "out dx, al" \
+    parm [dx] [al] modify exact [];
+
+/*
+ * The BIOS keyboard (INT 16h). Function 01h clears ZF when a key is
+ * waiting; LAHF copies the flags to AH, where ZF is bit 6. Function 00h
+ * returns the next key, scan code in AH and character in AL.
+ */
+#define ZF 0x40
+
+static unsigned char key_flags(void);
+#pragma aux key_flags = \
+    "mov ah, 1" \
+    "int 16h" \
+    "lahf" \
+    "mov al, ah" \
+    value [al] modify exact [ax];
+
+static unsigned key_read(void);
+#pragma aux key_read = \
+    "xor ah, ah" \
+    "int 16h" \
+    value [ax] modify exact [ax];
+
+#define key_ready() (!(key_flags() & ZF))
 
 static unsigned base;
 static uint16_t errors;
@@ -65,17 +100,17 @@ int port_open(const char *name, long baud)
     }
     divisor = (unsigned)(UART_CLOCK / baud);
 
-    outp(base + IER, 0);
-    outp(base + LCR, LCR_DLAB);
-    outp(base + DLL, divisor & 0xFF);
-    outp(base + DLM, divisor >> 8);
-    outp(base + LCR, LCR_8N1);
+    out_byte(base + IER, 0);
+    out_byte(base + LCR, LCR_DLAB);
+    out_byte(base + DLL, divisor & 0xFF);
+    out_byte(base + DLM, divisor >> 8);
+    out_byte(base + LCR, LCR_8N1);
     /* Leave any FIFO off: the protocol is designed not to need one. */
-    outp(base + FCR, 0);
-    outp(base + MCR, MCR_DTR_RTS);
+    out_byte(base + FCR, 0);
+    out_byte(base + MCR, MCR_DTR_RTS);
     /* Discard anything already received. */
-    while (inp(base + LSR) & LSR_DATA) {
-        (void)inp(base + RBR);
+    while (in_byte(base + LSR) & LSR_DATA) {
+        (void)in_byte(base + RBR);
     }
     errors = 0;
     return 0;
@@ -83,7 +118,7 @@ int port_open(const char *name, long baud)
 
 int port_get(uint8_t *byte)
 {
-    unsigned lsr = inp(base + LSR);
+    unsigned lsr = in_byte(base + LSR);
 
     if (lsr & LSR_ERRORS) {
         errors++;
@@ -91,20 +126,20 @@ int port_get(uint8_t *byte)
     if (!(lsr & LSR_DATA)) {
         return 0;
     }
-    *byte = (uint8_t)inp(base + RBR);
+    *byte = (uint8_t)in_byte(base + RBR);
     return 1;
 }
 
 void port_put(uint8_t byte)
 {
-    while (!(inp(base + LSR) & LSR_THRE)) {
+    while (!(in_byte(base + LSR) & LSR_THRE)) {
     }
-    outp(base + THR, byte);
+    out_byte(base + THR, byte);
 }
 
 void port_close(void)
 {
-    while (!(inp(base + LSR) & LSR_TEMT)) {
+    while (!(in_byte(base + LSR) & LSR_TEMT)) {
     }
 }
 
@@ -135,10 +170,10 @@ uint16_t port_ticks_per_second(void)
 
 int port_escape(void)
 {
-    if (!_bios_keybrd(_KEYBRD_READY)) {
+    if (!key_ready()) {
         return 0;
     }
-    return (_bios_keybrd(_KEYBRD_READ) & 0xFF) == 0x1B;
+    return (key_read() & 0xFF) == 0x1B;
 }
 
 int port_key(void)
@@ -150,10 +185,10 @@ int port_key(void)
     if (!isatty(0)) {
         return read(0, &c, 1) == 1 ? c : PORT_EOF;
     }
-    if (!_bios_keybrd(_KEYBRD_READY)) {
+    if (!key_ready()) {
         return PORT_NO_KEY;
     }
-    key = _bios_keybrd(_KEYBRD_READ) & 0xFF;
+    key = key_read() & 0xFF;
     /* 0 and E0 come with keys that have no ASCII code, such as arrows. */
     return key == 0 || key == 0xE0 ? PORT_NO_KEY : (int)key;
 }

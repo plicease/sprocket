@@ -1,0 +1,106 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Check a DOS program's link map (wlink option map): it may link only its
+# own objects and members of the pinned libc16 library, nothing else. Fails
+# closed: anything it cannot account for is an error.
+#
+#   - every module in the map is one of OBJECTs, or a member of LIBRARY
+#     (exactly that path, as the link named it);
+#   - every OBJECT is in the map;
+#   - the libraries used are LIBRARY alone;
+#   - _cstart_, the entry, comes from LIBRARY (libc16's startup).
+#
+# usage: test/check-map MAP LIBRARY OBJECT...
+
+set -eu
+
+if [ $# -lt 3 ]; then
+    echo "usage: $0 MAP LIBRARY OBJECT..." >&2
+    exit 2
+fi
+map=$1
+lib=$2
+shift 2
+
+if [ ! -f "$map" ]; then
+    echo "$map: no such map" >&2
+    exit 1
+fi
+
+awk -v lib="$lib" -v objects="$*" -v map="$map" '
+BEGIN {
+    n = split(objects, list, " ")
+    for (i = 1; i <= n; i++) {
+        want[list[i]] = 1
+    }
+    errors = 0
+}
+function fail(msg) {
+    print map ": " msg > "/dev/stderr"
+    errors++
+}
+/^Executable Image: / { image = 1 }
+/^Module: / {
+    line = substr($0, 9)
+    open = index(line, "(")
+    if (open == 0 || substr(line, length(line)) != ")") {
+        fail("cannot read module line: " $0)
+        module = ""
+        next
+    }
+    file = substr(line, 1, open - 1)
+    member = substr(line, open + 1, length(line) - open - 1)
+    module = file
+    if (file in want && member == file) {
+        seen[file] = 1
+        objs++
+    } else if (file == lib) {
+        members++
+    } else {
+        fail("module not allowed: " line)
+    }
+    next
+}
+# A symbol line under a module: address, then the name.
+module != "" && $1 ~ /^[0-9a-f]+:[0-9a-f]+[*+]?$/ && $NF == "_cstart_" {
+    if (module == lib) {
+        cstart = 1
+    } else {
+        fail("_cstart_ is not libc16'"'"'s, but from " module)
+    }
+}
+/Libraries Used/ { libs = 1; getline; next }
+libs && /^ *\+-/ { if (++rule == 1) next }
+libs && /\| *Linker Statistics/ { libs = 0; next }
+libs && NF > 0 && $0 !~ /^ *[+|]/ {
+    if ($0 == lib) {
+        libok = 1
+    } else {
+        fail("library not allowed: " $0)
+    }
+}
+END {
+    if (!image) {
+        fail("not a wlink map (no Executable Image line)")
+    }
+    for (o in want) {
+        if (!(o in seen)) {
+            fail("object missing from the link: " o)
+        }
+    }
+    if (!members) {
+        fail("no members of " lib)
+    }
+    if (!libok) {
+        fail("does not list " lib " among the libraries used")
+    }
+    if (!cstart) {
+        fail("_cstart_ (libc16'"'"'s startup) is not linked")
+    }
+    if (errors) {
+        exit 1
+    }
+    printf "%s: ok, %d objects and %d members of %s\n", map, objs, members, lib
+}
+' "$map"

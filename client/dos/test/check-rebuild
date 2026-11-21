@@ -1,0 +1,50 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Regression test for build/dos-config, the record of the DOS build's
+# settings: a change of a make variable on the command line must rebuild
+# SPROCKET.EXE, and changing it back must rebuild it as before.
+#
+#   make; make MAX_PAYLOAD=4090    must relink, to a different EXE
+#   make MAX_PAYLOAD=4090 again    must leave it alone
+#   make                           must rebuild the first EXE, byte for byte
+#
+# usage: test/check-rebuild [make arguments, such as WATCOM=dir]
+# (make check-rebuild)
+
+set -eu
+
+dir=build/rebuild
+exe=build/SPROCKET.EXE
+mkdir -p "$dir"
+failures=0
+
+fail() {
+    echo "FAIL: $*"
+    failures=$((failures + 1))
+}
+
+make -s "$@" "$exe"
+cp "$exe" "$dir/default.exe"
+
+make -s "$@" MAX_PAYLOAD=4090 "$exe"
+cp "$exe" "$dir/4090.exe"
+if cmp -s "$dir/default.exe" "$dir/4090.exe"; then
+    fail "make MAX_PAYLOAD=4090 after make left $exe as it was"
+fi
+
+before=$(ls -l --time-style=full-iso "$exe")
+make -s "$@" MAX_PAYLOAD=4090 "$exe"
+if [ "$(ls -l --time-style=full-iso "$exe")" != "$before" ]; then
+    fail "a second make MAX_PAYLOAD=4090 rebuilt $exe"
+fi
+
+make -s "$@" "$exe"
+if ! cmp -s "$dir/default.exe" "$exe"; then
+    fail "make after make MAX_PAYLOAD=4090 did not rebuild the default $exe"
+fi
+
+if [ "$failures" -ne 0 ]; then
+    exit 1
+fi
+echo "check-rebuild: ok"

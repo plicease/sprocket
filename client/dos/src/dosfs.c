@@ -105,7 +105,8 @@ int fs_dir_next(struct fs_dir *d, struct fs_entry *e)
 
 void fs_dir_close(struct fs_dir *d)
 {
-    _dos_findclose(&d->f);
+    /* A DOS search holds nothing to release. */
+    (void)d;
 }
 
 int fs_stat(const char *path, struct fs_entry *e)
@@ -153,7 +154,8 @@ int fs_set_mtime(const char *path, uint32_t mtime)
     int fd;
     unsigned rc;
 
-    if (_dos_open(path, O_RDWR, &fd) != 0) {
+    /* Setting the time needs no write access, so read-only files work too. */
+    if (_dos_open(path, O_RDONLY, &fd) != 0) {
         return FS_ERROR;
     }
     rc = _dos_setftime(fd, (unsigned)(mtime >> 16), (unsigned)(mtime & 0xFFFF));

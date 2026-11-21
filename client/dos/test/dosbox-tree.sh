@@ -30,6 +30,9 @@ head -c 3000 /dev/urandom > "$work/c/SHARE/GAMES/DOOM.EXE"
 printf 'old readme\r\n' > "$work/c/SHARE/README.TXT"
 printf 'uploaded\r\n' > "$work/local/up.txt"
 printf 'long name\r\n' > "$work/local/toolongname.txt"
+# Larger than several of the server's 4 KB write blocks (src/wbuf.c), and
+# not a multiple of one.
+head -c 20000 /dev/urandom > "$work/local/big.bin"
 
 cat > "$work/dosbox.conf" <<EOF
 [sdl]
@@ -67,7 +70,7 @@ status=0
 (
     cd "$work/local"
     printf '%s\n' 'ls -R' 'get games/doom.exe' 'get readme.txt' 'put up.txt' \
-        'put toolongname.txt' 'quit' |
+        'put big.bin' 'put toolongname.txt' 'quit' |
         "$sprocket" client --port "tcp://127.0.0.1:$port" --baud "$baud" --wait 30
 ) > "$work/client.txt" 2>&1 || status=$?
 # Replace README.TXT with a changed copy, in a second session with the
@@ -92,6 +95,7 @@ share=$work/c/SHARE
 cmp -s "$share/GAMES/DOOM.EXE" "$work/local/DOOM.EXE" || fail "DOOM.EXE differs"
 [ -f "$work/local/README.TXT" ] || fail "README.TXT was not fetched"
 cmp -s "$share/UP.TXT" "$work/local/up.txt" || fail "UP.TXT was not uploaded"
+cmp -s "$share/BIG.BIN" "$work/local/big.bin" || fail "BIG.BIN was not uploaded intact"
 grep -q "toolongname.txt: " "$work/client.txt" || fail "a non-8.3 name was not refused"
 ls "$share" | grep -qi '^toolongn' && fail "a non-8.3 name was written"
 grep -q "File exists" "$work/client.txt" || fail "put without -f did not refuse"
