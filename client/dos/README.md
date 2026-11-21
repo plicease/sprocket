@@ -34,6 +34,7 @@ The baud rate defaults to the `SPROCKET_BAUD` environment variable if it is set 
 | `src/proto.c`, `proto.h` | Sessions, the duplicate record and cache, `HELLO` / `PING` / `CLOSE` |
 | `src/tree.c`, `tree.h` | The file tree: `STAT`, `DIR_LIST`, `FILE_READ`, and writing with `FILE_BEGIN` / `DATA` / `COMMIT` / `ABORT` |
 | `src/crc32.c`, `crc32.h` | CRC-32 for `FILE_COMMIT` |
+| `src/wbuf.c`, `wbuf.h` | A received file's writes, gathered into whole 4 KB blocks so that DOS writes whole sectors |
 | `src/fsys.h` | Filesystem layer interface |
 | `src/dosfs.c` | DOS directory scans, file times, 8.3 and device-name checks |
 | `src/posixfs.c` | The same on Linux, for host testing |

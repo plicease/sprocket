@@ -46,7 +46,7 @@ endif
 VECTORS := ../../tests/vectors
 SHELL_FIXTURES := ../../tests/shell
 CORE := src/frame.c src/proto.c
-TREE := src/tree.c src/crc32.c
+TREE := src/tree.c src/crc32.c src/wbuf.c
 CLIENT := src/cli.c src/place.c src/req.c src/shell.c
 HEADERS := $(wildcard src/*.h)
 
@@ -180,6 +180,9 @@ build/test_tree: test/test_tree.c test/vectors.c $(CORE) $(TREE) src/place.c src
 build/test_shell: test/test_shell.c test/vectors.c src/shell.c $(HEADERS) build/host-config | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_shell.c test/vectors.c src/shell.c
 
+build/test_wbuf: test/test_wbuf.c src/wbuf.c src/wbuf.h build/host-config | build
+	$(CC) $(HOST_CFLAGS) -o $@ test/test_wbuf.c src/wbuf.c
+
 build/test_storage: test/test_storage.c src/storage.c $(HEADERS) build/host-config | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/test_storage.c src/storage.c
 
@@ -198,13 +201,14 @@ build/test_fmtcases: test/fmtcases.c build/host-config | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/fmtcases.c
 
 test: build/test_frame build/test_proto build/test_tree build/test_shell build/test_storage \
-	build/test_dosfmt
+	build/test_dosfmt build/test_wbuf
 	build/test_frame $(VECTORS)
 	build/test_proto $(VECTORS)
 	build/test_tree $(VECTORS)
 	build/test_shell $(SHELL_FIXTURES)
 	build/test_storage
 	build/test_dosfmt
+	build/test_wbuf
 
 clean:
 	rm -rf build

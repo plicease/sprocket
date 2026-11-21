@@ -89,12 +89,19 @@ listed above (`__I4D __I4M __U4D __U4M __U8DQ __U8DR __U8M`).
   a frame takes the same time as with Watcom's runtime under DOSBox-X. See
   [testing](testing.md#libc16-build-2026-11-20).
 - **Unbuffered streams.** libc16 streams start unbuffered; Watcom's are
-  buffered. Uploads (`fwrite` of one DATA payload) and downloads (`fread`)
-  already move a payload per call, so DOS call counts barely change. Console
-  output would, if each character were written alone; but the local
-  `printf` hands each message to `fwrite` in 64-byte blocks, and the only
-  other console output is `putchar` echoing a key. So no `setvbuf` (which
-  would link the heap).
+  buffered (512 bytes). The DOS call count barely changes, since a
+  received file is written a payload per call. But the call sizes do. A
+  download's payload is 1016 bytes, so libc16 handed DOS writes that start
+  and end inside sectors, and DOS merged each of those sectors through its
+  buffers. Watcom's buffer had kept the writes whole and sector-aligned. On
+  the NuXT at 9.54 MHz this cost about 24 ms a request, 8% of a download
+  (see [testing](testing.md#libc16-build-2026-11-20)). `src/wbuf.c` now
+  gathers a received file's writes, in both roles, into whole 4 KB blocks.
+  Console output would suffer if each character were written alone; but
+  the local `printf` hands each message to `fwrite` in 64-byte blocks, and
+  the only other console output is `putchar` echoing a key. Still no
+  `setvbuf`: even with a caller's buffer, libc16's links `malloc` and
+  `free`, about 1.9 KB in all, against 176 bytes for `wbuf.c`.
 - **Library name.** The small-model library is `LIBC16.LIB`, not
   `LIBC16S.LIB` as the issue says.
 - **Toolchain.** libc16 v0.17 pins the same Open Watcom snapshot
@@ -178,9 +185,9 @@ check unchanged. The host tests, the link-map checks and the DOSBox-X
 suites (`dosbox-hello.sh`, also with `FAULT=1`, `dosbox-tree.sh`,
 `dosbox-client.sh`, `dosbox-image.sh`, `make dosbox-fmt`) pass. On the NuXT
 at 9.54 MHz, `BENCH`'s end of frame is 126.3 ms with 0.19, the same as with
-Watcom's runtime. Downloads are still 7 to 9% slower than with Watcom's
-runtime on the NuXT, though not under DOSBox-X; the cause is not yet known
-(see [testing](testing.md#libc16-build-2026-11-20)).
+Watcom's runtime. Downloads were still 7 to 9% slower than with Watcom's
+runtime on the NuXT, though not under DOSBox-X: unaligned file writes, now
+gathered into whole blocks (see "Unbuffered streams" above).
 
 ## Proposed additions to libc16
 

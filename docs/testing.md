@@ -176,7 +176,20 @@ libc16 0.18 is consistently slower here because of `proto.c`'s `memcpy` of the 1
 
 All the transfers completed. Downloads are still slower with libc16, even though `BENCH`'s end of frame now matches: about 25 ms more per 1 KB request at 9.54 MHz, and about 18 to 47 ms at 4.77 MHz. The gap does not double when the clock halves, so it is probably not CPU work. Under DOSBox-X (8086, `cycles=fixed 3000`, 38400 baud), the two builds take the same time: 35.4 s for each `get` of the same file, and 39.1 against 39.2 s for a `put`. That holds both with output redirected to a file and with it on the screen, timed from the host's trace (35.1 s each). DOSBox-X's disk is effectively instant, and its `cycles=fixed` counts instructions without modelling what each one costs on a real 8088 or V20 (a `DIV` costs the same as a `MOV`), so it hides differences in disk time and in CPU time alike. Both builds make one DOS write per 1 KB payload (libc16's `fwrite` on an unbuffered binary stream is one INT 21h 40h call) and one per progress message.
 
-The screen is not the cause. Run again at 9.54 MHz and 57600 baud with output redirected to files (`SPROCK19 CLIENT COM1 57600 < CMDS.TXT > L19.TXT`), two `get -f` of the same file took 35.8 and 36.0 s with Open Watcom's runtime, and 38.9 and 39.1 s with libc16 0.19, a gap of 3.1 s (+8.6%). Both builds were a little faster than with output on the screen. The cause is not yet isolated. Uploads (`put`) were not timed on the hardware.
+The screen is not the cause. Run again at 9.54 MHz and 57600 baud with output redirected to files (`SPROCK19 CLIENT COM1 57600 < CMDS.TXT > L19.TXT`), two `get -f` of the same file took 35.8 and 36.0 s with Open Watcom's runtime, and 38.9 and 39.1 s with libc16 0.19, a gap of 3.1 s (+8.6%). Both builds were a little faster than with output on the screen.
+
+**Cause: unaligned writes.** Profiling builds timed each part of the download loop with the 8253 timer (channel 0 in mode 2, about 0.84 µs resolution), at 9.54 MHz and 57600 baud with output redirected, two 128 KB downloads each. All times are per download:
+
+| Build | Download | Request and response | `fwrite` | Progress |
+| --- | --- | --- | --- | --- |
+| Open Watcom runtime | 35.8, 35.8 s | 32.6 s | 1.81, 1.78 s | 0.77 s |
+| libc16 0.19 | 39.0, 38.9 s | 32.6 s | 4.90, 4.91 s | 0.74 s |
+| libc16 0.19, writes from a buffer within one 64 KB DMA page | 39.1, 39.1 s | 32.6 s | 5.02, 5.02 s | |
+| libc16 0.19, file given a 4 KB buffer (`setvbuf`) | 35.2, 35.2 s | 32.6 s | 1.08, 1.10 s | |
+
+The whole gap is in `fwrite`. A download's payload is 1016 bytes (the 1 KB limit less the 8-byte header), and libc16's unbuffered `fwrite` passes each payload to DOS as one write. So almost every write starts and ends inside a 512-byte sector, and DOS merges those sectors through its own buffers. Open Watcom's runtime buffers 512 bytes, which keeps its writes whole and sector-aligned. The DMA page made no difference, and none of the writes crossed a 64 KB boundary. With a 4 KB buffer, the writes are whole and aligned, and the download is 0.6 s faster than with Open Watcom's runtime.
+
+`src/wbuf.c` now gathers a received file's writes into whole 4 KB blocks, in both roles: downloads in `SPROCKET CLIENT`, and uploads to `SPROCKET SERVER`. It makes `SPROCKET.EXE` 176 bytes larger (32,854 bytes), against about 1.9 KB for `setvbuf`, which links `malloc` and `free`. `test/test_wbuf.c` checks that only whole blocks reach the file before the end, and `dosbox-client.sh` and `dosbox-tree.sh` now move a 20,000-byte file in each direction. The build with `wbuf.c` has not yet been timed on the NuXT. Uploads (`put`) were not timed on the hardware.
 
 ### Real hardware: P75 (`smokey`)
 
