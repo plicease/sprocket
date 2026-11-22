@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use sprocket::files::Root;
 use sprocket::imaging::capture::{self, Paths};
@@ -13,6 +15,8 @@ use sprocket::native::{self, session};
 use sprocket::trace::Trace;
 use sprocket::xmodem::{self, Event, RetryReason};
 use sprocket::{serve, transport, zmodem};
+
+mod config;
 
 /// The serial port used when --port is not given.
 #[cfg(windows)]
@@ -23,6 +27,12 @@ const DEFAULT_PORT: &str = "/dev/ttyS0";
 #[derive(Parser)]
 #[command(version, about = "Serial Protocol Rocket")]
 struct Cli {
+    /// Read options from this TOML file, from the command's own section
+    /// ([serve], [client], ...); options given on the command line or in
+    /// the environment override it. No file is read without this option
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -87,7 +97,7 @@ struct SendArgs {
     wait: u64,
 
     /// File to send
-    file: PathBuf,
+    file: Option<PathBuf>,
 
     /// Append a timestamped byte-level trace of the link to FILE
     #[arg(long, value_name = "FILE")]
@@ -112,7 +122,7 @@ struct ServeArgs {
 
     /// Directory to serve; nothing outside it is reachable
     #[arg(long)]
-    root: PathBuf,
+    root: Option<PathBuf>,
 
     /// Accept files from the client (put), and let put -f replace them
     /// (native mode). Without it the directory is read-only
@@ -144,13 +154,13 @@ struct ServeArgs {
     trace: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Mode {
     Native,
     Terminal,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Switch {
     On,
     Off,
@@ -198,12 +208,12 @@ struct ImageArgs {
     list: bool,
 
     /// Device number to image, from --list
-    #[arg(long, required_unless_present = "list")]
+    #[arg(long)]
     device: Option<u8>,
 
     /// Image file to write: NAME.img, with NAME.img.map and NAME.img.json
     /// beside it. If its map exists, imaging resumes
-    #[arg(long, required_unless_present = "list", value_name = "NAME.img")]
+    #[arg(long, value_name = "NAME.img")]
     output: Option<PathBuf>,
 
     /// Retries per unit on the server, after a failed read
@@ -240,7 +250,7 @@ struct ImageArgs {
     trace: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Protocol {
     Zmodem,
     Xmodem,
@@ -249,13 +259,81 @@ enum Protocol {
 }
 
 fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
+    let cli = match resolve(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(e) => match e.downcast_ref::<clap::Error>() {
+            Some(e) => e.exit(),
+            None => return Err(e),
+        },
+    };
+    match cli.command {
         Command::Send(args) => send(args),
         Command::Serve(args) => serve(args),
         Command::Client(args) => client(args),
         Command::Hello(args) => hello(args),
         Command::Image(args) => image(args),
     }
+}
+
+/// The command line as clap checks it without --config: as `Cli` declares
+/// it, plus the options that are required unless a config file can give
+/// them.
+fn strict() -> clap::Command {
+    Cli::command()
+        .mut_subcommand("send", |c| c.mut_arg("file", |a| a.required(true)))
+        .mut_subcommand("serve", |c| c.mut_arg("root", |a| a.required(true)))
+        .mut_subcommand("image", |c| {
+            c.mut_arg("device", |a| a.required_unless_present("list"))
+                .mut_arg("output", |a| a.required_unless_present("list"))
+        })
+}
+
+/// Parse the command line, and the file given by --config if any. Errors
+/// in the command line, or an option missing from both, are clap errors.
+fn resolve<I, T>(args: I) -> anyhow::Result<Cli>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // Without --config, parse exactly as if there were no config files.
+    let matches = match Cli::command().try_get_matches_from(&args) {
+        Ok(m) if m.get_one::<PathBuf>("config").is_some() => m,
+        _ => strict().try_get_matches_from(&args)?,
+    };
+    let mut cli = Cli::from_arg_matches(&matches)?;
+    let Some(path) = cli.config.clone() else {
+        return Ok(cli);
+    };
+    let file = config::load(&path)?;
+    let (name, sub) = matches.subcommand().expect("a subcommand is required");
+    config::apply(&mut cli.command, sub, file);
+
+    let missing = |what: &str, key: &str| -> anyhow::Error {
+        let mut cmd = strict();
+        cmd.build();
+        let cmd = cmd.find_subcommand_mut(name).expect("subcommand");
+        cmd.error(
+            ErrorKind::MissingRequiredArgument,
+            format!(
+                "{what} is required, on the command line or as {key} in [{name}] of {}",
+                path.display()
+            ),
+        )
+        .into()
+    };
+    match &cli.command {
+        Command::Send(a) if a.file.is_none() => return Err(missing("FILE", "file")),
+        Command::Serve(a) if a.root.is_none() => return Err(missing("--root", "root")),
+        Command::Image(a) if !a.list && a.device.is_none() => {
+            return Err(missing("--device (or --list)", "device"));
+        }
+        Command::Image(a) if !a.list && a.output.is_none() => {
+            return Err(missing("--output (or --list)", "output"));
+        }
+        _ => {}
+    }
+    Ok(cli)
 }
 
 fn open_trace(path: Option<&PathBuf>, command: &str) -> anyhow::Result<Option<Trace>> {
@@ -284,21 +362,28 @@ fn open_link(
     })
 }
 
-fn serve(args: ServeArgs) -> anyhow::Result<()> {
+/// Options that only native mode takes, however they were given.
+fn check_serve(args: &ServeArgs) -> anyhow::Result<()> {
     if args.writable && args.mode == Mode::Terminal {
         anyhow::bail!("--writable needs --mode native; terminal mode is always read-only");
     }
     if !args.disk.is_empty() && args.mode == Mode::Terminal {
         anyhow::bail!("--disk needs --mode native");
     }
+    Ok(())
+}
+
+fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    check_serve(&args)?;
     let mut disks: Vec<std::sync::Arc<dyn native::disk::Disk>> = Vec::new();
     for path in &args.disk {
         let disk = native::disk::ImageDisk::open(path, None)
             .with_context(|| format!("cannot offer {}", path.display()))?;
         disks.push(std::sync::Arc::new(disk));
     }
+    let root_path = args.root.as_ref().expect("checked by resolve");
     let root =
-        Root::new(&args.root).with_context(|| format!("cannot serve {}", args.root.display()))?;
+        Root::new(root_path).with_context(|| format!("cannot serve {}", root_path.display()))?;
     let trace = open_trace(args.trace.as_ref(), "serve")?;
     // Host log messages go to stderr and, when tracing, into the trace.
     let mut log = |msg: &str| {
@@ -854,12 +939,9 @@ fn ask(prompt: &str) -> bool {
 }
 
 fn send(args: SendArgs) -> anyhow::Result<()> {
-    let data =
-        fs::read(&args.file).with_context(|| format!("cannot read {}", args.file.display()))?;
-    let trace = open_trace(
-        args.trace.as_ref(),
-        &format!("send {}", args.file.display()),
-    )?;
+    let file = args.file.as_ref().expect("checked by resolve");
+    let data = fs::read(file).with_context(|| format!("cannot read {}", file.display()))?;
+    let trace = open_trace(args.trace.as_ref(), &format!("send {}", file.display()))?;
     let mut link = open_link(&args.port, args.baud, trace.as_ref())
         .with_context(|| format!("cannot open {}", args.port))?;
 
@@ -893,7 +975,7 @@ fn send_xmodem(
 
     eprintln!(
         "sending {} ({} bytes) on {}; waiting up to {}s for the receiver to start",
-        args.file.display(),
+        args.file.as_ref().expect("checked by resolve").display(),
         data.len(),
         args.port,
         args.wait,
@@ -965,8 +1047,8 @@ fn send_zmodem(
     link: &mut dyn transport::Transport,
     data: &[u8],
 ) -> anyhow::Result<()> {
-    let name = args
-        .file
+    let file = args.file.as_ref().expect("checked by resolve");
+    let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -976,13 +1058,13 @@ fn send_zmodem(
     };
     eprintln!(
         "sending {} ({} bytes) by ZMODEM on {}; waiting up to {}s for the receiver",
-        args.file.display(),
+        file.display(),
         data.len(),
         args.port,
         args.wait,
     );
     let tty = io::stderr().is_terminal();
-    let modified = fs::metadata(&args.file).and_then(|m| m.modified()).ok();
+    let modified = fs::metadata(file).and_then(|m| m.modified()).ok();
     let summary = zmodem::send(
         link,
         &zmodem::wire_name(&name),

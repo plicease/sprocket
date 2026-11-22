@@ -25,6 +25,7 @@ As with FTP, one name covers the protocol and the programs, and the context says
 - [File-transfer UI](docs/sprocket-file-transfer-ui.md): the shell shared by terminal mode and the native clients.
 - [Bootstrap and transfers](docs/bootstrap.md): standard protocols, smart terminal mode, first installation, upgrades, recovery.
 - [Disk imaging](docs/imaging.md): addressing, integrity, error reporting, safety.
+- [Configuration](docs/configuration.md): `--config` TOML files, and running `sprocket serve` as a systemd service.
 - [Licensing](docs/licensing.md): MIT project policy and third-party obligations.
 - [Roadmap](docs/roadmap.md): staged implementation and acceptance criteria.
 - [Testing and emulation](docs/testing.md): DOSBox-X, 86Box, CI, and real-hardware validation.
@@ -40,6 +41,8 @@ SPROCKET offers three complementary modes. None replaces another; each needs les
 | Native SPROCKET | `sprocket client`, `sprocket serve`, `sprocket hello` | `SPROCKET.EXE` | Yes, with dates; also disk imaging |
 
 All modes use the serial line as 8N1 with no flow control, at the `--baud` given (default `SPROCKET_BAUD` from the environment if set, else 9600). `--port` takes a serial device (default `/dev/ttyS0` on Linux, `COM1` on Windows), or `tcp://HOST:PORT` for an emulator's null-modem link. A TCP link is a raw byte stream, so configure the emulator's null-modem port to be transparent (no telnet or handshake escaping). Transfers are built in; no `sz`, `sx`, or other external program is used. `send`, `serve`, `client` and `hello` accept `--trace FILE`, which appends a timestamped hex/ASCII log of every byte in each direction, plus host log messages, for diagnosing transfer problems.
+
+Every command also takes `--config FILE`, a TOML file with a section for each command (`[serve]`, `[client]`, and so on) whose keys stand in for its options; the command line and `SPROCKET_BAUD` override it. No file is read without `--config`. See [configuration](docs/configuration.md), which also shows how to run `sprocket serve` as a systemd service with its settings in `/etc`.
 
 ### Bootstrap send
 
@@ -149,6 +152,7 @@ sprocket/
 ├── client/
 │   └── dos/            # SPROCKET.EXE: Open Watcom, 8086-compatible DOS program, and its tests
 ├── docs/               # design documents and the protocol v1 specification
+├── contrib/            # example --config file and systemd unit for `sprocket serve`
 └── tests/
     ├── vectors/        # protocol frame fixtures shared by the Rust and C tests
     └── shell/          # shell output fixtures (sizes, listings, help) shared the same way
