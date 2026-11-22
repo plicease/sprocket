@@ -7,7 +7,7 @@ SPROCKET CLIENT [port [baud]]                      default: COM1 9600
 SPROCKET SERVER [port [baud [dir]]] [/W] [/D] [/1] default: COM1 9600
 ```
 
-The baud rate defaults to the `SPROCKET_BAUD` environment variable if it is set (`SET SPROCKET_BAUD=38400`), else 9600. The Linux test build (`make host`) defaults to `/dev/ttyS0` instead of `COM1`.
+The port defaults to the `SPROCKET_PORT` environment variable if it is set (`SET SPROCKET_PORT=COM2`), else `COM1`, and the baud rate to `SPROCKET_BAUD` if it is set (`SET SPROCKET_BAUD=38400`), else 9600. A port or baud rate given on the command line overrides them, and an invalid one is refused as if it had been typed. The Linux test build (`make host`) defaults to `/dev/ttyS0` instead of `COM1`.
 
 `SPROCKET` with no subcommand prints its usage.
 

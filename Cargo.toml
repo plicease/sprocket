@@ -1,6 +1,6 @@
 [package]
 name = "sprocket"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 description = "Serial Protocol Rocket"
 repository = "https://github.com/plicease/sprocket"

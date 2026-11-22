@@ -1,0 +1,47 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# The port SPROCKET SERVER and SPROCKET CLIENT open: the port argument if
+# given, else SPROCKET_PORT, else the default. Run against the host build,
+# which shares main.c with SPROCKET.EXE, with ports that do not exist, so
+# each run fails at once and says which port it tried.
+#
+# usage: test/check-port-env build/sprocket-client
+# (make test)
+
+set -u
+
+prog=$1
+failures=0
+
+# expect PORT ENV ARGS...: running with SPROCKET_PORT=ENV ("-" to unset)
+# must try to open PORT.
+expect() {
+    want=$1
+    env=$2
+    shift 2
+    if [ "$env" = - ]; then
+        out=$(env -u SPROCKET_PORT SPROCKET_BAUD=9600 "$prog" "$@" </dev/null 2>&1)
+    else
+        out=$(env SPROCKET_PORT="$env" SPROCKET_BAUD=9600 "$prog" "$@" </dev/null 2>&1)
+    fi
+    case $out in
+    *"Cannot open $want:"*) ;;
+    *)
+        echo "FAIL: SPROCKET_PORT=$env $*: wanted $want, got: $out" >&2
+        failures=$((failures + 1))
+        ;;
+    esac
+}
+
+for mode in SERVER CLIENT; do
+    expect /no/such/env-port /no/such/env-port $mode
+    expect /no/such/arg-port /no/such/env-port $mode /no/such/arg-port
+    expect /no/such/arg-port /no/such/env-port $mode /no/such/arg-port 9600
+    expect /no/such/arg-port - $mode /no/such/arg-port
+done
+
+if [ "$failures" -ne 0 ]; then
+    exit 1
+fi
+echo "check-port-env: ok"

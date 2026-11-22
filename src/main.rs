@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
+use clap::builder::NonEmptyStringValueParser;
 use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
@@ -58,7 +59,7 @@ enum Command {
 #[derive(Args)]
 struct ClientArgs {
     /// Serial device, or tcp://HOST:PORT for an emulator link
-    #[arg(long, default_value = DEFAULT_PORT)]
+    #[arg(long, env = "SPROCKET_PORT", default_value = DEFAULT_PORT, value_parser = NonEmptyStringValueParser::new())]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
@@ -85,7 +86,7 @@ struct SendArgs {
     protocol: Protocol,
 
     /// Serial device, or tcp://HOST:PORT for an emulator link
-    #[arg(long, default_value = DEFAULT_PORT)]
+    #[arg(long, env = "SPROCKET_PORT", default_value = DEFAULT_PORT, value_parser = NonEmptyStringValueParser::new())]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
@@ -113,7 +114,7 @@ struct ServeArgs {
     mode: Mode,
 
     /// Serial device, or tcp://HOST:PORT for an emulator link
-    #[arg(long, default_value = DEFAULT_PORT)]
+    #[arg(long, env = "SPROCKET_PORT", default_value = DEFAULT_PORT, value_parser = NonEmptyStringValueParser::new())]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
@@ -169,7 +170,7 @@ enum Switch {
 #[derive(Args)]
 struct HelloArgs {
     /// Serial device, or tcp://HOST:PORT for an emulator link
-    #[arg(long, default_value = DEFAULT_PORT)]
+    #[arg(long, env = "SPROCKET_PORT", default_value = DEFAULT_PORT, value_parser = NonEmptyStringValueParser::new())]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control
@@ -192,7 +193,7 @@ struct HelloArgs {
 #[derive(Args)]
 struct ImageArgs {
     /// Serial device, or tcp://HOST:PORT for an emulator link
-    #[arg(long, default_value = DEFAULT_PORT)]
+    #[arg(long, env = "SPROCKET_PORT", default_value = DEFAULT_PORT, value_parser = NonEmptyStringValueParser::new())]
     port: String,
 
     /// Baud rate (serial devices only); the line is always 8N1, no flow control

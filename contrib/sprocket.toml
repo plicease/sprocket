@@ -7,10 +7,10 @@
 #
 # Each command reads only its own section. A key here stands in for the
 # option of the same name: an option given on the command line, or
-# SPROCKET_BAUD in the environment, overrides it, and a key left out keeps
-# the built-in default (shown commented out). Unknown sections and keys are
-# errors. Relative paths are relative to the working directory, so prefer
-# absolute ones.
+# SPROCKET_PORT or SPROCKET_BAUD in the environment, overrides it, and a
+# key left out keeps the built-in default (shown commented out). Unknown
+# sections and keys are errors. Relative paths are relative to the working
+# directory, so prefer absolute ones.
 
 [serve]
 # mode = "native"           # or "terminal"
