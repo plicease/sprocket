@@ -12,8 +12,9 @@
  * SPROCKET CLIENT [port [baud]] calls a server and runs the file-transfer
  * shell (cli.c).
  *
- * The port defaults to port_default (COM1 on DOS), and the baud rate to
- * SPROCKET_BAUD from the environment, or 9600 if that is not set.
+ * The port defaults to SPROCKET_PORT from the environment, or port_default
+ * (COM1 on DOS) if that is not set; the baud rate to SPROCKET_BAUD, or
+ * 9600.
  *
  * Screen output happens only before a response is sent, never between
  * sending a response and reading the next request: printing scrolls the
@@ -32,7 +33,7 @@
 #include "storage.h"
 #include "tree.h"
 
-#define VERSION "0.5.1"
+#define VERSION "0.6.0"
 /*
  * The largest payload accepted and sent. A STORAGE_READ response carries
  * one 512-byte sector at 1024 and seven at 4090, the protocol's limit;
@@ -67,8 +68,17 @@ static void usage(void)
     printf("      its files; /W also lets clients write them. /D offers the\n");
     printf("      disks to image (read-only). /1 exits when the first client\n");
     printf("      closes its session.\n\n");
-    printf("The port defaults to %s, and baud to SPROCKET_BAUD if set, else 9600.\n",
+    printf("The port defaults to SPROCKET_PORT if set, else %s, and baud to\n",
            port_default);
+    printf("SPROCKET_BAUD if set, else 9600.\n");
+}
+
+/* The port when none is given: SPROCKET_PORT, or port_default. */
+static const char *default_port(void)
+{
+    const char *env = getenv("SPROCKET_PORT");
+
+    return env != NULL && *env != '\0' ? env : port_default;
 }
 
 /* The baud rate when none is given: SPROCKET_BAUD, or 9600. */
@@ -152,7 +162,7 @@ static int server(int argc, char **argv)
             return 1;
         }
     }
-    name = args[0] != NULL ? args[0] : port_default;
+    name = args[0] != NULL ? args[0] : default_port();
     baud = args[1] != NULL ? strtol(args[1], NULL, 10) : default_baud();
     dir = args[2];
     if (writable && dir == NULL) {
@@ -273,7 +283,7 @@ static int client(int argc, char **argv)
         usage();
         return 1;
     }
-    return cli_run(argc > 0 ? argv[0] : port_default,
+    return cli_run(argc > 0 ? argv[0] : default_port(),
                    argc > 1 ? strtol(argv[1], NULL, 10) : default_baud(), resp_buf, rx_buf,
                    MAX_PAYLOAD, 0);
 }

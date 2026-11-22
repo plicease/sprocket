@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 //! `--config` through the real binary, where the environment can be set:
-//! precedence of the command line, SPROCKET_BAUD, the file and defaults.
+//! precedence of the command line, SPROCKET_BAUD and SPROCKET_PORT, the
+//! file and defaults.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
 fn sprocket() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sprocket"));
-    command.env_remove("SPROCKET_BAUD");
+    command
+        .env_remove("SPROCKET_BAUD")
+        .env_remove("SPROCKET_PORT");
     command
 }
 
@@ -92,4 +95,72 @@ fn exit_codes() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("line 3"), "{stderr}");
+}
+
+/// The port `sprocket hello` failed to open: a path in a directory that
+/// does not exist, so it fails at once and the message names it.
+fn hello_port(config: Option<&str>, env: Option<&str>, args: &[&str]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let mut command = sprocket();
+    command.args(["hello", "--wait", "0"]);
+    if let Some(toml) = config {
+        let path = dir.path().join("sprocket.toml");
+        std::fs::write(&path, toml).unwrap();
+        command.arg("--config").arg(&path);
+    }
+    if let Some(port) = env {
+        command.env("SPROCKET_PORT", port);
+    }
+    let out = command.args(args).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("Error: cannot open "))
+        .unwrap_or_else(|| panic!("{stderr}"));
+    line.to_string()
+}
+
+#[test]
+fn port_precedence() {
+    let file = Some("[hello]\nport = \"/no/such/file-port\"\n");
+    let env = Some("/no/such/env-port");
+    let cli = ["--port", "/no/such/cli-port"];
+    assert_eq!(hello_port(None, env, &[]), "/no/such/env-port");
+    assert_eq!(hello_port(None, env, &cli), "/no/such/cli-port");
+    assert_eq!(hello_port(file, None, &[]), "/no/such/file-port");
+    assert_eq!(hello_port(file, env, &[]), "/no/such/env-port");
+    assert_eq!(hello_port(file, env, &cli), "/no/such/cli-port");
+}
+
+#[test]
+fn empty_port_is_refused() {
+    // As with an empty SPROCKET_BAUD, rather than falling back.
+    let out = sprocket()
+        .args(["hello", "--wait", "0"])
+        .env("SPROCKET_PORT", "")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--port <PORT>"), "{stderr}");
+}
+
+#[test]
+fn port_from_the_environment_for_serve() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = sprocket()
+        .args(["serve", "--root"])
+        .arg(dir.path())
+        .env("SPROCKET_PORT", "tcp://127.0.0.1:1")
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stderr.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(line.contains(" on tcp://127.0.0.1:1 ("), "{line}");
 }

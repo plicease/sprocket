@@ -41,11 +41,13 @@ Relative paths are taken relative to the working directory, as on the command li
 For each option, the first of these that gives it wins:
 
 1. the command line;
-2. the environment (`SPROCKET_BAUD`, for `baud`);
+2. the environment: `SPROCKET_PORT` for `port`, and `SPROCKET_BAUD` for `baud`;
 3. the command's section of the `--config` file;
 4. the built-in default.
 
 An option given on the command line wins even when it is given at its default value: `--editing on` overrides `editing = "off"`. A list given on the command line replaces the file's list: `--disk c.img` serves only `c.img`, not the file's disks as well. A flag can only be turned on from the command line, so a file's `writable = true` or `yes = true` cannot be turned off by an option: change the file, or use another one.
+
+A variable that is set but empty, such as `SPROCKET_PORT=`, is an error, not a way to fall back to the file. A service started by systemd has neither variable unless its unit sets one with `Environment=`, so the file decides.
 
 ### Required options and arguments
 

@@ -2,9 +2,10 @@
 //! The file given by `--config`: TOML with a section for each subcommand.
 //!
 //! A value in a command's section stands in for an option that was not
-//! given on the command line or through the environment (`SPROCKET_BAUD`),
-//! and takes precedence over the built-in default. Unknown sections and
-//! keys are errors, so a misspelling is never silently ignored.
+//! given on the command line or through the environment (`SPROCKET_BAUD`,
+//! `SPROCKET_PORT`), and takes precedence over the built-in default.
+//! Unknown sections and keys are errors, so a misspelling is never silently
+//! ignored.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -295,7 +296,8 @@ mod tests {
     use crate::{Cli, Command, Mode, Protocol, Switch, resolve};
 
     /// Resolve `args` with `toml` as the --config file. Baud is left out of
-    /// these tests, as SPROCKET_BAUD may be set; tests/config.rs covers it.
+    /// these tests, as SPROCKET_BAUD may be set, and port is checked only
+    /// when SPROCKET_PORT is not; tests/config.rs covers both.
     fn with(toml: &str, args: &[&str]) -> anyhow::Result<Cli> {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(toml.as_bytes()).unwrap();
@@ -303,6 +305,11 @@ mod tests {
         let mut argv = vec!["sprocket", args[0], "--config", &path];
         argv.extend(&args[1..]);
         resolve(argv)
+    }
+
+    /// Whether SPROCKET_PORT is set, so the port cannot be checked here.
+    fn port_from_env() -> bool {
+        std::env::var_os("SPROCKET_PORT").is_some()
     }
 
     fn clap_kind(e: &anyhow::Error) -> Option<ErrorKind> {
@@ -321,7 +328,7 @@ mod tests {
             (a.mode, a.editing, a.writable, a.idle, a.wait),
             (Mode::Native, Switch::On, false, 600, 60)
         );
-        assert_eq!(a.port, crate::DEFAULT_PORT);
+        assert!(port_from_env() || a.port == crate::DEFAULT_PORT);
         for args in [
             &["sprocket", "serve"][..],
             &["sprocket", "send"],
@@ -342,10 +349,8 @@ mod tests {
         let Command::Hello(a) = with("", &["hello"]).unwrap().command else {
             panic!()
         };
-        assert_eq!(
-            (a.port.as_str(), a.wait, a.pings),
-            (crate::DEFAULT_PORT, 60, 3)
-        );
+        assert_eq!((a.wait, a.pings), (60, 3));
+        assert!(port_from_env() || a.port == crate::DEFAULT_PORT);
         assert!(a.trace.is_none());
     }
 
@@ -367,7 +372,7 @@ mod tests {
             panic!()
         };
         assert_eq!(a.mode, Mode::Terminal);
-        assert_eq!(a.port, "tcp://localhost:5000");
+        assert!(port_from_env() || a.port == "tcp://localhost:5000");
         assert_eq!(a.root.unwrap().to_str(), Some("/srv/files"));
         assert_eq!((a.idle, a.wait, a.editing), (30, 5, Switch::Off));
         assert_eq!(a.trace.unwrap().to_str(), Some("/tmp/t"));
@@ -399,7 +404,7 @@ mod tests {
         };
         assert_eq!((a.mode, a.editing, a.wait), (Mode::Native, Switch::On, 60));
         assert_eq!(a.root.unwrap().to_str(), Some("here"));
-        assert_eq!(a.port, "/dev/ttyUSB0");
+        assert!(port_from_env() || a.port == "/dev/ttyUSB0");
     }
 
     #[test]
@@ -473,7 +478,8 @@ mod tests {
         let Command::Hello(a) = with(toml, &["hello", "--pings", "3"]).unwrap().command else {
             panic!()
         };
-        assert_eq!((a.pings, a.port.as_str()), (3, "p"));
+        assert_eq!(a.pings, 3);
+        assert!(port_from_env() || a.port == "p");
     }
 
     #[test]

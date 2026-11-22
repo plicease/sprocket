@@ -201,7 +201,7 @@ build/test_fmtcases: test/fmtcases.c build/host-config | build
 	$(CC) $(HOST_CFLAGS) -o $@ test/fmtcases.c
 
 test: build/test_frame build/test_proto build/test_tree build/test_shell build/test_storage \
-	build/test_dosfmt build/test_wbuf
+	build/test_dosfmt build/test_wbuf build/sprocket-client
 	build/test_frame $(VECTORS)
 	build/test_proto $(VECTORS)
 	build/test_tree $(VECTORS)
@@ -209,6 +209,7 @@ test: build/test_frame build/test_proto build/test_tree build/test_shell build/t
 	build/test_storage
 	build/test_dosfmt
 	build/test_wbuf
+	test/check-port-env build/sprocket-client
 
 clean:
 	rm -rf build
