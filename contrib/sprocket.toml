@@ -1,0 +1,62 @@
+# Example configuration for `sprocket --config FILE`.
+#
+# sprocket reads a configuration file only when given --config; it never
+# looks for one itself. For a service, copy this file to a path of your
+# choosing, such as /etc/sprocket.toml, and edit it: see
+# docs/configuration.md.
+#
+# Each command reads only its own section. A key here stands in for the
+# option of the same name: an option given on the command line, or
+# SPROCKET_BAUD in the environment, overrides it, and a key left out keeps
+# the built-in default (shown commented out). Unknown sections and keys are
+# errors. Relative paths are relative to the working directory, so prefer
+# absolute ones.
+
+[serve]
+# mode = "native"           # or "terminal"
+port = "/dev/ttyS0"         # or "tcp://HOST:PORT" for an emulator
+baud = 38400                # default 9600
+root = "/srv/sprocket"      # required, here or as --root
+# writable = false          # native mode only: accept put, and put -f
+# disk = ["/srv/sprocket-disks/floppy.img"]   # native mode only; --disk replaces the list
+# idle = 600                # terminal mode
+# wait = 60                 # terminal mode
+# editing = "on"            # terminal mode: "on" or "off"
+# trace = "/var/log/sprocket/serve.trace"
+
+[client]
+# port = "/dev/ttyS0"
+# baud = 9600
+# wait = 60
+# editing = "on"
+# trace = "client.trace"
+
+[send]
+# protocol = "xmodem"       # "xmodem", "xmodem-1k" or "zmodem"
+# port = "/dev/ttyS0"
+# baud = 9600
+# wait = 60
+# file = "/srv/sprocket/SPROCKET.EXE"   # FILE on the command line replaces it
+# trace = "send.trace"
+
+[hello]
+# port = "/dev/ttyS0"
+# baud = 9600
+# wait = 60
+# pings = 3
+# trace = "hello.trace"
+
+[image]
+# port = "/dev/ttyS0"
+# baud = 9600
+# wait = 60
+# list = false              # not with device or output
+# device = 0
+# output = "floppy.img"
+# retries = 3
+# max_units = 0
+# geometry = "80/2/18"      # C/H/S; not with format
+# format = "1.44m"          # 360, 720, 1200 or 1440 (also "360k", ..., "1.44m")
+# recover = 0
+# yes = false
+# trace = "image.trace"

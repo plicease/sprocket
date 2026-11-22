@@ -1,0 +1,29 @@
+# Example systemd unit for `sprocket serve`. It is not installed or enabled
+# for you: see docs/configuration.md. Adjust the sprocket path (a .deb
+# installs /usr/bin/sprocket), the user, and the paths to your system.
+[Unit]
+Description=SPROCKET file server on a serial port
+Documentation=https://github.com/plicease/sprocket/blob/main/docs/configuration.md
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/sprocket serve --config /etc/sprocket.toml
+# A dedicated user that may open serial ports: the group is dialout on
+# Debian and Ubuntu, uucp on Arch and some others.
+User=sprocket
+Group=sprocket
+SupplementaryGroups=dialout
+Restart=on-failure
+RestartSec=5
+
+# Hardening. The whole file system is read-only to the service except the
+# paths listed in ReadWritePaths; add the served root there for a writable
+# server, and the directory of any trace file.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+#ReadWritePaths=/srv/sprocket /var/log/sprocket
+
+[Install]
+WantedBy=multi-user.target
